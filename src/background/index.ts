@@ -256,6 +256,25 @@ function parseControllerMessage(value: unknown): ControllerToBackgroundMessage |
       };
     }
 
+    case CONTROLLER_TO_BG.FOCUS_ROUTE_TAB: {
+      if (!isObjectRecord(value.payload)) {
+        return null;
+      }
+
+      const { routeId } = value.payload;
+
+      if (typeof routeId !== 'string' || !routeId) {
+        return null;
+      }
+
+      return {
+        type: CONTROLLER_TO_BG.FOCUS_ROUTE_TAB,
+        payload: {
+          routeId,
+        },
+      };
+    }
+
     case CONTROLLER_TO_BG.ROUTE_COMMAND: {
       if (!isObjectRecord(value.payload)) {
         return null;
@@ -844,6 +863,42 @@ async function setSoloRoute(routeId: string | null): Promise<ControllerResponse>
   };
 }
 
+async function focusRouteTab(routeId: string): Promise<ControllerResponse> {
+  const route = routesById.get(routeId);
+  if (!route) {
+    return asErrorResponse('Route not found.');
+  }
+
+  try {
+    const updatedTab = await chrome.tabs.update(route.tabId, { active: true });
+    const nextWindowId =
+      typeof updatedTab.windowId === 'number'
+        ? updatedTab.windowId
+        : typeof route.windowId === 'number'
+          ? route.windowId
+          : null;
+
+    if (typeof nextWindowId === 'number') {
+      await chrome.windows.update(nextWindowId, {
+        focused: true,
+        state: 'normal',
+      });
+      route.windowId = nextWindowId;
+      sourceWindowId = nextWindowId;
+    }
+
+    route.updatedAtMs = Date.now();
+    emitSessionUpdated('route-tab-focused');
+
+    return {
+      ok: true,
+      session: buildSessionSnapshot(),
+    };
+  } catch (error) {
+    return asErrorResponse(toErrorMessage(error, 'Failed to focus route tab.'));
+  }
+}
+
 async function executeRouteCommand(
   routeId: string,
   command: RouteCommand,
@@ -951,6 +1006,9 @@ async function handleControllerMessage(message: ControllerToBackgroundMessage): 
 
     case CONTROLLER_TO_BG.SET_SOLO_ROUTE:
       return setSoloRoute(message.payload.routeId);
+
+    case CONTROLLER_TO_BG.FOCUS_ROUTE_TAB:
+      return focusRouteTab(message.payload.routeId);
 
     case CONTROLLER_TO_BG.ROUTE_COMMAND:
       return executeRouteCommand(message.payload.routeId, message.payload.command, message.payload.args ?? {});

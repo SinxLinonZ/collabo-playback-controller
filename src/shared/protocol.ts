@@ -8,6 +8,7 @@ export const CONTROLLER_TO_BG = {
   SET_ROUTE_VOLUME: 'controller/set-route-volume',
   SET_ROUTE_MUTED: 'controller/set-route-muted',
   SET_SOLO_ROUTE: 'controller/set-solo-route',
+  FOCUS_ROUTE_TAB: 'controller/focus-route-tab',
   ROUTE_COMMAND: 'controller/route-command',
   GET_SESSION: 'controller/get-session',
 } as const;
@@ -159,6 +160,13 @@ export interface ControllerSetSoloRouteMessage {
   };
 }
 
+export interface ControllerFocusRouteTabMessage {
+  type: (typeof CONTROLLER_TO_BG)['FOCUS_ROUTE_TAB'];
+  payload: {
+    routeId: string;
+  };
+}
+
 export interface ControllerRouteCommandMessage {
   type: (typeof CONTROLLER_TO_BG)['ROUTE_COMMAND'];
   payload: {
@@ -182,6 +190,7 @@ export type ControllerToBackgroundMessage =
   | ControllerSetRouteVolumeMessage
   | ControllerSetRouteMutedMessage
   | ControllerSetSoloRouteMessage
+  | ControllerFocusRouteTabMessage
   | ControllerRouteCommandMessage
   | ControllerGetSessionMessage;
 
@@ -229,6 +238,10 @@ export interface SetSoloRouteResponse extends SuccessResponseBase {
   session: SessionSnapshot;
 }
 
+export interface FocusRouteTabResponse extends SuccessResponseBase {
+  session: SessionSnapshot;
+}
+
 export interface RouteCommandResponse extends SuccessResponseBase {
   snapshot: RouteSnapshot | null;
 }
@@ -247,6 +260,7 @@ export type ControllerResponse =
   | SetRouteVolumeResponse
   | SetRouteMutedResponse
   | SetSoloRouteResponse
+  | FocusRouteTabResponse
   | RouteCommandResponse
   | GetSessionResponse
   | ErrorResponse;

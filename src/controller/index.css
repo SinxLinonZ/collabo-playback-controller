@@ -118,6 +118,14 @@ input {
   box-shadow: inset 0 0 0 1px rgba(31, 122, 58, 0.18);
 }
 
+.card.focused-route {
+  border-color: var(--accent);
+  box-shadow:
+    inset 0 0 0 1px rgba(21, 101, 192, 0.25),
+    0 0 0 2px rgba(21, 101, 192, 0.2),
+    0 0 14px rgba(21, 101, 192, 0.28);
+}
+
 .card-head {
   display: flex;
   align-items: start;

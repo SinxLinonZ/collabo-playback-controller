@@ -214,6 +214,18 @@ function formatDrift(driftSec: number | null): string {
   return `${sign}${driftSec.toFixed(3)}s`;
 }
 
+function isRouteCardInteractiveTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) {
+    return false;
+  }
+
+  return Boolean(
+    target.closest(
+      'button,input,select,textarea,a,label,[contenteditable],[data-prevent-route-focus="true"]',
+    ),
+  );
+}
+
 function resolveReferenceRoute(session: SessionSnapshot): RouteState | null {
   const { routes, mainRouteId } = session;
   if (routes.length === 0) {
@@ -268,6 +280,8 @@ export default function App() {
   const [editingRouteOffsets, setEditingRouteOffsets] = useState<Record<string, boolean>>({});
   const [routeVolumeDrafts, setRouteVolumeDrafts] = useState<Record<string, string>>({});
   const [editingRouteVolumes, setEditingRouteVolumes] = useState<Record<string, boolean>>({});
+  const [autoFocusEnabled, setAutoFocusEnabled] = useState(false);
+  const [focusedRouteId, setFocusedRouteId] = useState<string | null>(null);
   const [autoSyncCorrectionEnabled, setAutoSyncCorrectionEnabled] = useState(false);
   const [routeRuntimeById, setRouteRuntimeById] = useState<Record<string, RouteRuntimeState>>({});
   const autoSyncTickRunningRef = useRef(false);
@@ -570,6 +584,35 @@ export default function App() {
         setStatus(routeId ? `Solo route set: ${routeId}.` : 'Solo route cleared.');
       } catch (error) {
         setStatus(toErrorMessage(error, 'Set solo route failed.'));
+      }
+    },
+    [applySessionSnapshot, setStatus],
+  );
+
+  const handleFocusRouteTab = useCallback(
+    async (routeId: string): Promise<void> => {
+      setFocusedRouteId(routeId);
+
+      try {
+        const response = await sendToBackground({
+          type: CONTROLLER_TO_BG.FOCUS_ROUTE_TAB,
+          payload: {
+            routeId,
+          },
+        });
+
+        if (isErrorResponse(response)) {
+          throw new Error(response.error);
+        }
+
+        if (!('session' in response) || !isSessionSnapshot(response.session)) {
+          throw new Error('Unexpected focus-route-tab response shape.');
+        }
+
+        applySessionSnapshot(response.session);
+        setStatus(`Focused route ${routeId} tab.`);
+      } catch (error) {
+        setStatus(toErrorMessage(error, 'Focus route tab failed.'));
       }
     },
     [applySessionSnapshot, setStatus],
@@ -944,6 +987,17 @@ export default function App() {
     });
   }, [autoSyncCorrectionEnabled, handleRouteCommand, refreshSession, setStatus, viewState.session.routes]);
 
+  const toggleAutoFocus = useCallback((): void => {
+    const nextEnabled = !autoFocusEnabled;
+    setAutoFocusEnabled(nextEnabled);
+
+    if (!nextEnabled) {
+      setFocusedRouteId(null);
+    }
+
+    setStatus(nextEnabled ? 'Auto Focus enabled.' : 'Auto Focus disabled.');
+  }, [autoFocusEnabled, setStatus]);
+
   const scheduleRouteVolumeCommit = useCallback(
     (routeId: string, volumePercent: number): void => {
       const normalizedVolumePercent = normalizeVolumePercent(volumePercent);
@@ -1033,6 +1087,17 @@ export default function App() {
     },
     [],
   );
+
+  useEffect(() => {
+    if (!focusedRouteId) {
+      return;
+    }
+
+    const exists = viewState.session.routes.some((route) => route.routeId === focusedRouteId);
+    if (!exists) {
+      setFocusedRouteId(null);
+    }
+  }, [focusedRouteId, viewState.session.routes]);
 
   useEffect(() => {
     setRouteRuntimeById((prev) => {
@@ -1299,6 +1364,12 @@ export default function App() {
           </button>
           <button
             type="button"
+            onClick={toggleAutoFocus}
+          >
+            {autoFocusEnabled ? 'Auto Focus: ON' : 'Auto Focus: OFF'}
+          </button>
+          <button
+            type="button"
             onClick={() => {
               toggleAutoSyncCorrection();
             }}
@@ -1314,6 +1385,7 @@ export default function App() {
             viewState.session.routes.map((route) => {
               const isMainRoute = route.routeId === viewState.session.mainRouteId;
               const isSoloRoute = route.routeId === viewState.session.soloRouteId;
+              const isFocusedRoute = route.routeId === focusedRouteId;
               const isForcedMutedBySolo =
                 typeof viewState.session.soloRouteId === 'string' &&
                 viewState.session.soloRouteId !== route.routeId;
@@ -1324,7 +1396,21 @@ export default function App() {
               const runtimeState = routeRuntimeById[route.routeId];
 
               return (
-                <li key={route.routeId} className={`card${isMainRoute ? ' main-route' : ''}`}>
+                <li
+                  key={route.routeId}
+                  className={`card${isMainRoute ? ' main-route' : ''}${isFocusedRoute ? ' focused-route' : ''}`}
+                  onClick={(event) => {
+                    if (!autoFocusEnabled) {
+                      return;
+                    }
+
+                    if (isRouteCardInteractiveTarget(event.target)) {
+                      return;
+                    }
+
+                    void handleFocusRouteTab(route.routeId);
+                  }}
+                >
                   <div className="card-head">
                     <p className="title">
                       {route.videoTitle || route.tabTitle || '(Unknown title)'}
