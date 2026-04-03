@@ -193,12 +193,16 @@ solo 规则：
 - drift
 - sync status（synced/minor-drift/soft-correcting/hard-correcting/severe-drift）
 
-6.6 漂移检测与纠偏
+6.6 漂移检测与 Auto Sync Correction
 
 系统应周期检查：
 
 - 检查周期建议 500ms
 - drift = (masterTime + offset) - currentTime
+
+术语约定：
+
+- 本文中 `Auto Sync Correction` 指“周期性漂移检测 + 自动纠偏”机制
 
 纠偏策略：
 
@@ -328,3 +332,5 @@ solo 规则：
 - Main Reference Route：主参考路，仅用于初始化与认知锚点
 - TabSync Mode：控制现有 YouTube tabs 的主模式
 - Embed Grid Mode：扩展页内 iframe 网格的可选模式
+- Sync Now：手动触发的一次性立即重对齐
+- Auto Sync Correction：后台周期运行的持续纠偏机制
