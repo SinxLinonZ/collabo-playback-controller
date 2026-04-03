@@ -41,6 +41,13 @@ body {
   gap: 8px;
 }
 
+.master-seeker-group {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 3px 4px;
+  background: color-mix(in srgb, var(--surface) 88%, #eff6ff 12%);
+}
+
 .candidate-card {
   background: #f8fbff;
 }

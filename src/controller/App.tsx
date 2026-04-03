@@ -957,6 +957,50 @@ export default function App() {
     await seekAllToTarget(masterTimeSec, 'Sync Now');
   }, [handleRouteCommand, seekAllToTarget, setStatus, viewState.session.mainRouteId, viewState.session.routes]);
 
+  const runMasterSeekByDelta = useCallback(
+    async (deltaSec: number): Promise<void> => {
+      const referenceRoute = resolveReferenceRoute(viewState.session);
+
+      if (!referenceRoute) {
+        setStatus('No routes in session.');
+        return;
+      }
+
+      const deltaLabel = `${deltaSec >= 0 ? '+' : ''}${deltaSec.toFixed(1)}s`;
+      let referenceCurrentTimeSec: number | null = null;
+      let usedFallback = false;
+
+      try {
+        const snapshot = await handleRouteCommand(referenceRoute.routeId, ROUTE_COMMAND.GET_STATUS);
+        const rawCurrentTimeSec = snapshot?.currentTimeSec;
+        if (Number.isFinite(rawCurrentTimeSec)) {
+          referenceCurrentTimeSec = rawCurrentTimeSec as number;
+        }
+      } catch {
+        // Fall through to cached reference time.
+      }
+
+      if (!Number.isFinite(referenceCurrentTimeSec)) {
+        if (Number.isFinite(referenceRoute.currentTimeSec)) {
+          referenceCurrentTimeSec = referenceRoute.currentTimeSec;
+          usedFallback = true;
+        } else {
+          setStatus(`Master Seek ${deltaLabel} failed: reference route time unavailable.`);
+          return;
+        }
+      }
+
+      const resolvedReferenceCurrentTimeSec = referenceCurrentTimeSec as number;
+      const masterTimeSec = resolvedReferenceCurrentTimeSec - referenceRoute.offsetSec + deltaSec;
+      await seekAllToTarget(masterTimeSec, `Master Seek ${deltaLabel}`);
+
+      if (usedFallback) {
+        setStatus(`Master Seek ${deltaLabel}: used cached reference time.`);
+      }
+    },
+    [handleRouteCommand, seekAllToTarget, setStatus, viewState.session],
+  );
+
   const runReadOffsets = useCallback(async (): Promise<void> => {
     const { routes } = viewState.session;
     const referenceRoute = resolveReferenceRoute(viewState.session);
@@ -1693,6 +1737,22 @@ export default function App() {
               >
                 Seek All
               </Button>
+              <Group gap={4} wrap="nowrap" className="master-seeker-group">
+                {[-15, -5, -1, 1, 5, 15].map((deltaSec) => (
+                  <Button
+                    key={deltaSec}
+                    size="xs"
+                    variant="default"
+                    onClick={() => {
+                      void runMasterSeekByDelta(deltaSec).catch((error) => {
+                        setStatus(toErrorMessage(error, 'Master seek failed.'));
+                      });
+                    }}
+                  >
+                    {deltaSec > 0 ? `+${deltaSec}s` : `${deltaSec}s`}
+                  </Button>
+                ))}
+              </Group>
               <Button
                 variant="default"
                 leftSection={<FiArrowUpRight size={14} />}
