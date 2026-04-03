@@ -30,17 +30,17 @@ Done when:
 - [x] `Controller -> Background`
 - [x] `Background -> Content`
 - [x] `Content -> Background -> Controller`
-- [ ] 约定统一错误码（目前为字符串错误）
-- [ ] 统一超时语义（目前未做 timeout policy）
+- [x] 约定统一错误码（`ErrorCode` 全链路落地）
+- [x] 统一超时语义（Controller->Background / Background->Content 已统一 timeout policy）
 - [x] 路由类消息带 `routeId`，关键状态带时间戳
 
 Done when:
 - [x] 类型定义覆盖全链路消息
-- [ ] 未知消息、超时、目标 tab 不存在等情况全部有一致错误语义
+- [x] 未知消息、超时、目标 tab 不存在等情况全部有一致错误语义
 
 ## 3. Tab 扫描与导入（M1）
 - [x] 扫描：当前窗口 / 全部窗口的 YouTube watch tabs
-- [ ] UI 多选导入（当前为逐条导入）
+- [x] UI 多选导入（保留逐条导入并支持批量导入）
 - [x] 导入后展示基础信息：`tab title`、`video title`、`url`、`status`
 - [x] “移出会话”（不关闭 tab）
 
@@ -51,7 +51,7 @@ Done when:
 ## 4. Content Script 播放器控制层（M1）
 - [x] 在 watch page 内控制原生播放器（play/pause/seek/volume/mute/rate）
 - [x] 周期上报状态（500ms 级）
-- [ ] 广告/特殊状态细分与专门错误语义（目前仅基础 buffering/异常）
+- [x] 广告/特殊状态细分与专门错误语义（`ad/ended/specialState` + dedicated error code）
 - [x] 注入失败重试与 ping 校验
 
 Done when:
@@ -106,13 +106,13 @@ Done when:
 - [x] 用户可直接从 UI 判断每路当前是否可控、是否同步
 
 ## 9. 生命周期与异常处理（M1）
-- [ ] 监听 tab `create/update/remove/activate`（当前已覆盖 `update/remove`）
+- [x] 监听 tab `create/update/remove/activate`（已补齐 `create/activate`）
 - [x] tab 被关闭或跳出 YouTube 时自动失效/移出
 - [x] 主参考路失效时自动重选
 - [x] 单路异常隔离，不影响全局调度
 
 Done when:
-- [ ] 在多窗口和频繁切 tab 场景下状态一致性可保持
+- [x] 在多窗口和频繁切 tab 场景下状态一致性可保持
 
 ## 10. M1 验收清单（必须全部通过）
 - [x] 能导入多个 YouTube tabs
@@ -124,7 +124,7 @@ Done when:
 
 ## 11. M2 Backlog（可用性增强）
 - [ ] session 保存/加载（`chrome.storage`）
-- [ ] 批量导入与筛选（含多选导入）
+- [ ] 批量导入体验增强与筛选（多选导入已完成，后续做更强筛选/规则）
 - [ ] 更强状态可视化与故障诊断
 - [ ] 快捷操作（如“主路有声”）
 

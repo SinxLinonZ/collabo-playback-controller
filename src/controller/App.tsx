@@ -2,11 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BG_EVENT,
   CONTROLLER_TO_BG,
+  ERROR_CODE,
   ROUTE_COMMAND,
   TAB_SCAN_SCOPE,
   type CandidateTab,
   type ControllerResponse,
   type ControllerToBackgroundMessage,
+  type ErrorCode,
   type ErrorResponse,
   type RouteCommand,
   type RouteCommandArgs,
@@ -43,6 +45,7 @@ const AUTO_SYNC_HARD_DRIFT_SEC = 1.0;
 const AUTO_SYNC_HARD_COOLDOWN_MS = 3000;
 const AUTO_SYNC_MAX_RATE_DELTA = 0.02;
 const VOLUME_SLIDER_DEBOUNCE_MS = 180;
+const BG_RESPONSE_TIMEOUT_MS = 2500;
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -52,8 +55,41 @@ function toErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
+function isErrorCode(value: unknown): value is ErrorCode {
+  return typeof value === 'string' && Object.values(ERROR_CODE).includes(value as ErrorCode);
+}
+
 function isErrorResponse(response: ControllerResponse): response is ErrorResponse {
   return !response.ok;
+}
+
+function formatErrorResponse(response: ErrorResponse): string {
+  return `[${response.errorCode}] ${response.error}`;
+}
+
+class TimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TimeoutError';
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+  let timerId: number | null = null;
+
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timerId = window.setTimeout(() => {
+      reject(new TimeoutError(timeoutMessage));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (typeof timerId === 'number') {
+      window.clearTimeout(timerId);
+    }
+  }
 }
 
 function isRouteState(value: unknown): value is RouteState {
@@ -72,7 +108,13 @@ function isRouteState(value: unknown): value is RouteState {
     typeof value.targetVolumePercent === 'number' &&
     typeof value.targetMuted === 'boolean' &&
     typeof value.appliedMuted === 'boolean' &&
-    typeof value.status === 'string' &&
+    (value.status === 'loading' ||
+      value.status === 'playing' ||
+      value.status === 'paused' ||
+      value.status === 'buffering' ||
+      value.status === 'ad' ||
+      value.status === 'ended' ||
+      value.status === 'error') &&
     typeof value.currentTimeSec === 'number' &&
     (typeof value.durationSec === 'number' || value.durationSec === null) &&
     (isObjectRecord(value.lastSnapshot) || value.lastSnapshot === null) &&
@@ -100,7 +142,12 @@ function isControllerResponse(value: unknown): value is ControllerResponse {
   }
 
   if (!value.ok) {
-    return typeof value.error === 'string';
+    return (
+      typeof value.error === 'string' &&
+      isErrorCode(value.errorCode) &&
+      typeof value.atMs === 'number' &&
+      Number.isFinite(value.atMs)
+    );
   }
 
   return true;
@@ -243,7 +290,7 @@ function resolveReferenceRoute(session: SessionSnapshot): RouteState | null {
 }
 
 function sendToBackground(message: ControllerToBackgroundMessage): Promise<ControllerResponse> {
-  return new Promise((resolve, reject) => {
+  const request = new Promise<ControllerResponse>((resolve, reject) => {
     chrome.runtime.sendMessage(message, (response) => {
       const runtimeError = chrome.runtime.lastError;
 
@@ -260,6 +307,12 @@ function sendToBackground(message: ControllerToBackgroundMessage): Promise<Contr
       resolve(response);
     });
   });
+
+  return withTimeout(
+    request,
+    BG_RESPONSE_TIMEOUT_MS,
+    `[${ERROR_CODE.TIMEOUT_BG_RESPONSE}] Timed out while waiting for background response.`,
+  );
 }
 
 const INITIAL_VIEW_STATE: ViewState = {
@@ -273,6 +326,7 @@ const INITIAL_VIEW_STATE: ViewState = {
 
 export default function App() {
   const [viewState, setViewState] = useState<ViewState>(INITIAL_VIEW_STATE);
+  const [selectedCandidateTabIds, setSelectedCandidateTabIds] = useState<Record<number, boolean>>({});
   const [statusText, setStatusText] = useState('Ready.');
   const [scanScope, setScanScope] = useState<TabScanScope>(TAB_SCAN_SCOPE.ALL_WINDOWS);
   const [seekAllInput, setSeekAllInput] = useState('');
@@ -305,7 +359,7 @@ export default function App() {
     const response = await sendToBackground({ type: CONTROLLER_TO_BG.GET_SESSION });
 
     if (isErrorResponse(response)) {
-      throw new Error(response.error);
+      throw new Error(formatErrorResponse(response));
     }
 
     if (!('session' in response)) {
@@ -327,7 +381,7 @@ export default function App() {
       });
 
       if (isErrorResponse(response)) {
-        throw new Error(response.error);
+        throw new Error(formatErrorResponse(response));
       }
 
       if (!('snapshot' in response)) {
@@ -352,7 +406,7 @@ export default function App() {
         });
 
         if (isErrorResponse(response)) {
-          throw new Error(response.error);
+          throw new Error(formatErrorResponse(response));
         }
 
         if (!('tabs' in response)) {
@@ -372,6 +426,34 @@ export default function App() {
     [setStatus],
   );
 
+  const handleToggleCandidateSelection = useCallback((tabId: number, selected: boolean): void => {
+    setSelectedCandidateTabIds((prev) => {
+      const next = { ...prev };
+
+      if (selected) {
+        next[tabId] = true;
+      } else {
+        delete next[tabId];
+      }
+
+      return next;
+    });
+  }, []);
+
+  const handleSelectAllCandidates = useCallback((): void => {
+    setSelectedCandidateTabIds(() => {
+      const next: Record<number, boolean> = {};
+      viewState.candidates.forEach((candidate) => {
+        next[candidate.tabId] = true;
+      });
+      return next;
+    });
+  }, [viewState.candidates]);
+
+  const handleClearCandidateSelection = useCallback((): void => {
+    setSelectedCandidateTabIds({});
+  }, []);
+
   const handleImportTab = useCallback(
     async (tabId: number): Promise<void> => {
       try {
@@ -383,10 +465,18 @@ export default function App() {
         });
 
         if (isErrorResponse(response)) {
-          throw new Error(response.error);
+          throw new Error(formatErrorResponse(response));
         }
 
         await refreshSession();
+        setSelectedCandidateTabIds((prev) => {
+          if (!prev[tabId]) {
+            return prev;
+          }
+          const next = { ...prev };
+          delete next[tabId];
+          return next;
+        });
 
         const alreadyImported = 'alreadyImported' in response && response.alreadyImported === true;
         setStatus(alreadyImported ? `Tab ${tabId} already imported.` : `Tab ${tabId} imported.`);
@@ -396,6 +486,74 @@ export default function App() {
     },
     [refreshSession, setStatus],
   );
+
+  const handleImportSelectedTabs = useCallback(async (): Promise<void> => {
+    const selectedTabIds = viewState.candidates
+      .map((candidate) => candidate.tabId)
+      .filter((tabId) => selectedCandidateTabIds[tabId]);
+
+    if (selectedTabIds.length === 0) {
+      setStatus('No selected candidate tabs.');
+      return;
+    }
+
+    const importedTabIdSet = new Set(viewState.session.routes.map((route) => route.tabId));
+    const pendingTabIds = selectedTabIds.filter((tabId) => !importedTabIdSet.has(tabId));
+
+    if (pendingTabIds.length === 0) {
+      setStatus('Selected tabs are already imported.');
+      return;
+    }
+
+    setStatus(`Importing ${pendingTabIds.length} selected tab(s)...`);
+
+    const results = await Promise.allSettled(
+      pendingTabIds.map(async (tabId) => {
+        const response = await sendToBackground({
+          type: CONTROLLER_TO_BG.IMPORT_TAB,
+          payload: { tabId },
+        });
+
+        if (isErrorResponse(response)) {
+          throw new Error(formatErrorResponse(response));
+        }
+
+        return {
+          tabId,
+          alreadyImported: 'alreadyImported' in response && response.alreadyImported === true,
+        };
+      }),
+    );
+
+    await refreshSession();
+
+    const successCount = results.filter((result) => result.status === 'fulfilled').length;
+    const failedCount = pendingTabIds.length - successCount;
+    const alreadyImportedCount = results.filter(
+      (result) => result.status === 'fulfilled' && result.value.alreadyImported,
+    ).length;
+
+    setSelectedCandidateTabIds((prev) => {
+      const next = { ...prev };
+      results.forEach((result) => {
+        if (result.status === 'fulfilled') {
+          delete next[result.value.tabId];
+        }
+      });
+      return next;
+    });
+
+    if (failedCount === 0) {
+      setStatus(
+        alreadyImportedCount === 0
+          ? `Imported ${successCount} selected tab(s).`
+          : `Imported ${successCount} selected tab(s), ${alreadyImportedCount} already existed.`,
+      );
+      return;
+    }
+
+    setStatus(`Import selected finished: ${successCount} success, ${failedCount} failed.`);
+  }, [refreshSession, selectedCandidateTabIds, setStatus, viewState.candidates, viewState.session.routes]);
 
   const handleRemoveRoute = useCallback(
     async (routeId: string): Promise<void> => {
@@ -408,7 +566,7 @@ export default function App() {
         });
 
         if (isErrorResponse(response)) {
-          throw new Error(response.error);
+          throw new Error(formatErrorResponse(response));
         }
 
         await refreshSession();
@@ -431,7 +589,7 @@ export default function App() {
         });
 
         if (isErrorResponse(response)) {
-          throw new Error(response.error);
+          throw new Error(formatErrorResponse(response));
         }
 
         if (!('session' in response) || !isSessionSnapshot(response.session)) {
@@ -462,7 +620,7 @@ export default function App() {
         });
 
         if (isErrorResponse(response)) {
-          throw new Error(response.error);
+          throw new Error(formatErrorResponse(response));
         }
 
         if (!('session' in response) || !isSessionSnapshot(response.session)) {
@@ -506,7 +664,7 @@ export default function App() {
         });
 
         if (isErrorResponse(response)) {
-          throw new Error(response.error);
+          throw new Error(formatErrorResponse(response));
         }
 
         if (!('session' in response) || !isSessionSnapshot(response.session)) {
@@ -544,7 +702,7 @@ export default function App() {
         });
 
         if (isErrorResponse(response)) {
-          throw new Error(response.error);
+          throw new Error(formatErrorResponse(response));
         }
 
         if (!('session' in response) || !isSessionSnapshot(response.session)) {
@@ -573,7 +731,7 @@ export default function App() {
         });
 
         if (isErrorResponse(response)) {
-          throw new Error(response.error);
+          throw new Error(formatErrorResponse(response));
         }
 
         if (!('session' in response) || !isSessionSnapshot(response.session)) {
@@ -602,7 +760,7 @@ export default function App() {
         });
 
         if (isErrorResponse(response)) {
-          throw new Error(response.error);
+          throw new Error(formatErrorResponse(response));
         }
 
         if (!('session' in response) || !isSessionSnapshot(response.session)) {
@@ -779,7 +937,7 @@ export default function App() {
         });
 
         if (isErrorResponse(response)) {
-          throw new Error(response.error);
+          throw new Error(formatErrorResponse(response));
         }
 
         if (!('session' in response) || !isSessionSnapshot(response.session)) {
@@ -1076,6 +1234,20 @@ export default function App() {
     });
   }, [editingRouteVolumes, viewState.session.routes]);
 
+  useEffect(() => {
+    setSelectedCandidateTabIds((prev) => {
+      const next: Record<number, boolean> = {};
+
+      viewState.candidates.forEach((tab) => {
+        if (prev[tab.tabId]) {
+          next[tab.tabId] = true;
+        }
+      });
+
+      return next;
+    });
+  }, [viewState.candidates]);
+
   useEffect(
     () => () => {
       const timerIds = Object.values(volumeDebounceTimerByRouteIdRef.current);
@@ -1229,6 +1401,15 @@ export default function App() {
     [viewState.session.routes],
   );
 
+  const selectedCandidateCount = useMemo(
+    () =>
+      viewState.candidates.filter((candidate) => selectedCandidateTabIds[candidate.tabId]).length,
+    [selectedCandidateTabIds, viewState.candidates],
+  );
+
+  const allCandidatesSelected =
+    viewState.candidates.length > 0 && selectedCandidateCount === viewState.candidates.length;
+
   return (
     <main className="app">
       <header className="header">
@@ -1238,7 +1419,7 @@ export default function App() {
 
       <section className="panel">
         <h2>Tab Scan</h2>
-        <div className="row">
+        <div className="row controls-row">
           <label htmlFor="scanScope">Scope</label>
           <select
             id="scanScope"
@@ -1251,6 +1432,32 @@ export default function App() {
           <button type="button" onClick={() => void handleScanTabs(scanScope)}>
             Scan
           </button>
+          <button
+            type="button"
+            disabled={viewState.candidates.length === 0 || allCandidatesSelected}
+            onClick={handleSelectAllCandidates}
+          >
+            Select All
+          </button>
+          <button
+            type="button"
+            disabled={selectedCandidateCount === 0}
+            onClick={handleClearCandidateSelection}
+          >
+            Clear Selection
+          </button>
+          <button
+            type="button"
+            disabled={selectedCandidateCount === 0}
+            onClick={() => {
+              void handleImportSelectedTabs().catch((error) => {
+                setStatus(toErrorMessage(error, 'Import selected failed.'));
+              });
+            }}
+          >
+            Import Selected
+          </button>
+          <span className="scan-selection-meta">{`selected:${selectedCandidateCount}/${viewState.candidates.length}`}</span>
         </div>
         <ul className="list">
           {viewState.candidates.length === 0 ? (
@@ -1258,20 +1465,32 @@ export default function App() {
           ) : (
             viewState.candidates.map((tab) => {
               const isImported = importedTabIds.has(tab.tabId);
+              const isSelected = Boolean(selectedCandidateTabIds[tab.tabId]);
 
               return (
                 <li key={tab.tabId} className="card">
                   <div className="card-head">
-                    <p className="title">{tab.title || '(Untitled tab)'}</p>
-                    <button
-                      type="button"
-                      disabled={isImported}
-                      onClick={() => {
-                        void handleImportTab(tab.tabId);
-                      }}
-                    >
-                      {isImported ? 'Imported' : 'Import'}
-                    </button>
+                    <label className="candidate-title">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={(event) => {
+                          handleToggleCandidateSelection(tab.tabId, event.target.checked);
+                        }}
+                      />
+                      <span className="title">{tab.title || '(Untitled tab)'}</span>
+                    </label>
+                    <div className="candidate-actions">
+                      <button
+                        type="button"
+                        disabled={isImported}
+                        onClick={() => {
+                          void handleImportTab(tab.tabId);
+                        }}
+                      >
+                        {isImported ? 'Imported' : 'Import'}
+                      </button>
+                    </div>
                   </div>
                   <p className="meta">{`tab:${tab.tabId} | window:${tab.windowId} | ${tab.url}`}</p>
                 </li>

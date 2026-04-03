@@ -143,6 +143,7 @@ C. Content Script（每个受控 YouTube tab）
 系统应支持：
 
 - 扫描当前窗口或全部窗口中的 YouTube watch tabs
+- 在扫描结果中支持多选后批量导入
 - 将选中 tab 导入当前会话
 - 展示每一路基础信息（tab title、video title、url、状态）
 - 删除某一路控制（仅移出会话，不关闭 tab）
@@ -190,7 +191,8 @@ solo 规则：
 
 每一路应显示：
 
-- 播放状态（loading/ready/playing/paused/buffering/error）
+- 播放状态（loading/playing/paused/buffering/ad/ended/error）
+- special state（none/ad/live/not-seekable/no-video/unknown）
 - 当前时间
 - offset
 - drift
@@ -231,6 +233,15 @@ solo 规则：
 
 - 点击 `button/input/select/textarea/a/label/contenteditable` 区域不触发 auto focus
 - 关闭 `Auto Focus` 时不触发卡片跳转行为
+
+6.8 错误码与超时策略（M1）
+
+系统应支持：
+
+- 全链路统一错误结构：`ok=false, errorCode, error, atMs`
+- Controller -> Background 消息超时（`TIMEOUT_BG_RESPONSE`）
+- Background -> Content 消息超时（`TIMEOUT_CONTENT_RESPONSE`）
+- 对 `unknown message`、`bad payload`、`route not found`、`content unreachable` 等常见失败提供稳定 error code
 
 
 7. 可选模式需求（Embed Grid）

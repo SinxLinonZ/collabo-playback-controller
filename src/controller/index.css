@@ -96,6 +96,12 @@ input {
   min-width: 210px;
 }
 
+input[type='checkbox'] {
+  min-width: 0;
+  width: auto;
+  padding: 0;
+}
+
 .list {
   margin: 0;
   padding: 0;
@@ -131,6 +137,25 @@ input {
   align-items: start;
   justify-content: space-between;
   gap: 8px;
+}
+
+.candidate-title {
+  display: inline-flex;
+  align-items: start;
+  gap: 8px;
+  font-weight: 400;
+  min-width: 0;
+  flex: 1;
+}
+
+.candidate-actions {
+  display: inline-flex;
+  align-items: center;
+}
+
+.scan-selection-meta {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .title {

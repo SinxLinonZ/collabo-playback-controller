@@ -34,6 +34,28 @@ export const TAB_SCAN_SCOPE = {
 
 export const WATCH_URL_PATTERNS = ['https://www.youtube.com/watch*'] as const;
 
+export const ERROR_CODE = {
+  MALFORMED_MESSAGE: 'MALFORMED_MESSAGE',
+  UNKNOWN_MESSAGE_TYPE: 'UNKNOWN_MESSAGE_TYPE',
+  BAD_REQUEST: 'BAD_REQUEST',
+  ROUTE_NOT_FOUND: 'ROUTE_NOT_FOUND',
+  TAB_NOT_AVAILABLE: 'TAB_NOT_AVAILABLE',
+  TAB_NOT_WATCH_PAGE: 'TAB_NOT_WATCH_PAGE',
+  CONTENT_SCRIPT_PATH_MISSING: 'CONTENT_SCRIPT_PATH_MISSING',
+  CONTENT_SCRIPT_INJECTION_FAILED: 'CONTENT_SCRIPT_INJECTION_FAILED',
+  CONTENT_UNREACHABLE: 'CONTENT_UNREACHABLE',
+  TIMEOUT_BG_RESPONSE: 'TIMEOUT_BG_RESPONSE',
+  TIMEOUT_CONTENT_RESPONSE: 'TIMEOUT_CONTENT_RESPONSE',
+  MALFORMED_CONTENT_RESPONSE: 'MALFORMED_CONTENT_RESPONSE',
+  STATE_AD_BLOCKING: 'STATE_AD_BLOCKING',
+  STATE_NOT_SEEKABLE: 'STATE_NOT_SEEKABLE',
+  VIDEO_NOT_FOUND: 'VIDEO_NOT_FOUND',
+  UNSUPPORTED_COMMAND: 'UNSUPPORTED_COMMAND',
+  COMMAND_EXECUTION_FAILED: 'COMMAND_EXECUTION_FAILED',
+  WINDOW_FOCUS_FAILED: 'WINDOW_FOCUS_FAILED',
+  INTERNAL_ERROR: 'INTERNAL_ERROR',
+} as const;
+
 export const ROUTE_COMMAND = {
   PLAY: 'play',
   PAUSE: 'pause',
@@ -46,8 +68,10 @@ export const ROUTE_COMMAND = {
 
 export type TabScanScope = (typeof TAB_SCAN_SCOPE)[keyof typeof TAB_SCAN_SCOPE];
 export type RouteCommand = (typeof ROUTE_COMMAND)[keyof typeof ROUTE_COMMAND];
+export type ErrorCode = (typeof ERROR_CODE)[keyof typeof ERROR_CODE];
 
-export type RouteStatus = 'loading' | 'playing' | 'paused' | 'buffering' | 'error';
+export type RouteStatus = 'loading' | 'playing' | 'paused' | 'buffering' | 'ad' | 'ended' | 'error';
+export type RouteSpecialState = 'none' | 'ad' | 'live' | 'not-seekable' | 'no-video' | 'unknown';
 
 export interface CandidateTab {
   tabId: number;
@@ -59,6 +83,7 @@ export interface CandidateTab {
 
 export interface RouteSnapshot {
   status: Exclude<RouteStatus, 'error'>;
+  specialState: RouteSpecialState;
   currentTimeSec: number;
   durationSec: number | null;
   playbackRate: number;
@@ -200,7 +225,10 @@ export interface SuccessResponseBase {
 
 export interface ErrorResponse {
   ok: false;
+  errorCode: ErrorCode;
   error: string;
+  atMs: number;
+  details?: string;
 }
 
 export interface HelloResponse extends SuccessResponseBase {

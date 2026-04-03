@@ -1,12 +1,15 @@
 import {
   BG_TO_CONTENT,
   CONTENT_TO_BG,
+  ERROR_CODE,
   ROUTE_COMMAND,
   type ContentCommandResponse,
   type ContentPlayerEventMessage,
+  type ErrorCode,
   type RouteCommand,
   type RouteCommandArgs,
   type RouteSnapshot,
+  type RouteSpecialState,
 } from '../shared/protocol.js';
 
 const HEARTBEAT_MS = 500;
@@ -42,16 +45,46 @@ function toSafeNumber(value: number, fallback = 0): number {
   return Number.isFinite(value) ? value : fallback;
 }
 
-function resolveStatus(video: HTMLVideoElement | null): RouteSnapshot['status'] {
+function resolveSpecialState(video: HTMLVideoElement | null): RouteSpecialState {
+  if (!video) {
+    return 'no-video';
+  }
+
+  const moviePlayer = document.getElementById('movie_player');
+  if (moviePlayer?.classList.contains('ad-showing')) {
+    return 'ad';
+  }
+
+  const isLive = !Number.isFinite(video.duration) || video.duration <= 0;
+  if (isLive) {
+    return 'live';
+  }
+
+  if (video.seekable.length === 0) {
+    return 'not-seekable';
+  }
+
+  return 'none';
+}
+
+function resolveStatus(video: HTMLVideoElement | null, specialState: RouteSpecialState): RouteSnapshot['status'] {
   if (!video) {
     return 'loading';
+  }
+
+  if (specialState === 'ad') {
+    return 'ad';
+  }
+
+  if (video.ended) {
+    return 'ended';
   }
 
   if (video.readyState < 2) {
     return 'buffering';
   }
 
-  if (video.paused || video.ended) {
+  if (video.paused) {
     return 'paused';
   }
 
@@ -64,10 +97,12 @@ function getVideoElement(): HTMLVideoElement | null {
 
 function readSnapshot(): RouteSnapshot {
   const video = getVideoElement();
+  const specialState = resolveSpecialState(video);
 
   if (!video) {
     return {
       status: 'loading',
+      specialState,
       currentTimeSec: 0,
       durationSec: null,
       playbackRate: 1,
@@ -79,7 +114,8 @@ function readSnapshot(): RouteSnapshot {
   }
 
   return {
-    status: resolveStatus(video),
+    status: resolveStatus(video, specialState),
+    specialState,
     currentTimeSec: toSafeNumber(video.currentTime, 0),
     durationSec: Number.isFinite(video.duration) ? video.duration : null,
     playbackRate: toSafeNumber(video.playbackRate, 1),
@@ -90,11 +126,19 @@ function readSnapshot(): RouteSnapshot {
   };
 }
 
-function asErrorResponse(error: string): ContentCommandResponse {
-  return {
+function asErrorResponse(errorCode: ErrorCode, error: string, details?: string): ContentCommandResponse {
+  const response: ContentCommandResponse = {
     ok: false,
+    errorCode,
     error,
+    atMs: Date.now(),
   };
+
+  if (typeof details === 'string' && details) {
+    response.details = details;
+  }
+
+  return response;
 }
 
 function toCommandNumberArg(args: RouteCommandArgs, key: string): number | null {
@@ -104,6 +148,10 @@ function toCommandNumberArg(args: RouteCommandArgs, key: string): number | null 
   }
 
   return raw;
+}
+
+function isSeekSupported(video: HTMLVideoElement): boolean {
+  return video.seekable.length > 0 && Number.isFinite(video.currentTime);
 }
 
 async function executeCommand(command: RouteCommand, args: RouteCommandArgs = {}): Promise<ContentCommandResponse> {
@@ -117,8 +165,10 @@ async function executeCommand(command: RouteCommand, args: RouteCommandArgs = {}
   }
 
   if (!video) {
-    return asErrorResponse('No video element found on current page.');
+    return asErrorResponse(ERROR_CODE.VIDEO_NOT_FOUND, 'No video element found on current page.');
   }
+
+  const specialState = resolveSpecialState(video);
 
   try {
     switch (command) {
@@ -131,9 +181,17 @@ async function executeCommand(command: RouteCommand, args: RouteCommandArgs = {}
         break;
 
       case ROUTE_COMMAND.SEEK: {
+        if (specialState === 'ad') {
+          return asErrorResponse(ERROR_CODE.STATE_AD_BLOCKING, 'Seek is blocked while an ad is playing.');
+        }
+
+        if (!isSeekSupported(video)) {
+          return asErrorResponse(ERROR_CODE.STATE_NOT_SEEKABLE, 'Current media is not seekable.');
+        }
+
         const targetSec = toCommandNumberArg(args, 'timeSec');
         if (targetSec === null) {
-          return asErrorResponse('Invalid seek target.');
+          return asErrorResponse(ERROR_CODE.BAD_REQUEST, 'Invalid seek target.');
         }
 
         const maxDuration = Number.isFinite(video.duration) ? video.duration : targetSec;
@@ -145,7 +203,7 @@ async function executeCommand(command: RouteCommand, args: RouteCommandArgs = {}
       case ROUTE_COMMAND.SET_VOLUME: {
         const volumePercent = toCommandNumberArg(args, 'volumePercent');
         if (volumePercent === null) {
-          return asErrorResponse('Invalid volume value.');
+          return asErrorResponse(ERROR_CODE.BAD_REQUEST, 'Invalid volume value.');
         }
 
         const clamped = Math.max(0, Math.min(100, volumePercent));
@@ -158,9 +216,16 @@ async function executeCommand(command: RouteCommand, args: RouteCommandArgs = {}
         break;
 
       case ROUTE_COMMAND.SET_PLAYBACK_RATE: {
+        if (specialState === 'ad') {
+          return asErrorResponse(
+            ERROR_CODE.STATE_AD_BLOCKING,
+            'PlaybackRate change is blocked while an ad is playing.',
+          );
+        }
+
         const playbackRate = toCommandNumberArg(args, 'playbackRate');
         if (playbackRate === null) {
-          return asErrorResponse('Invalid playbackRate.');
+          return asErrorResponse(ERROR_CODE.BAD_REQUEST, 'Invalid playbackRate.');
         }
 
         const clamped = Math.max(0.25, Math.min(2, playbackRate));
@@ -169,7 +234,7 @@ async function executeCommand(command: RouteCommand, args: RouteCommandArgs = {}
       }
 
       default:
-        return asErrorResponse('Unsupported command.');
+        return asErrorResponse(ERROR_CODE.UNSUPPORTED_COMMAND, 'Unsupported command.');
     }
 
     return {
@@ -177,7 +242,10 @@ async function executeCommand(command: RouteCommand, args: RouteCommandArgs = {}
       snapshot: readSnapshot(),
     };
   } catch (error) {
-    return asErrorResponse(toErrorMessage(error, 'Command execution failed.'));
+    return asErrorResponse(
+      ERROR_CODE.COMMAND_EXECUTION_FAILED,
+      toErrorMessage(error, 'Command execution failed.'),
+    );
   }
 }
 
@@ -243,7 +311,7 @@ function bootstrap(): void {
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!isObjectRecord(message) || typeof message.type !== 'string') {
-      sendResponse(asErrorResponse('Malformed message.'));
+      sendResponse(asErrorResponse(ERROR_CODE.MALFORMED_MESSAGE, 'Malformed message.'));
       return false;
     }
 
@@ -257,7 +325,7 @@ function bootstrap(): void {
 
     if (message.type === BG_TO_CONTENT.EXECUTE_COMMAND) {
       if (!isObjectRecord(message.payload) || !isRouteCommand(message.payload.command)) {
-        sendResponse(asErrorResponse('Malformed command payload.'));
+        sendResponse(asErrorResponse(ERROR_CODE.BAD_REQUEST, 'Malformed command payload.'));
         return false;
       }
 
@@ -268,13 +336,18 @@ function bootstrap(): void {
           sendResponse(response);
         })
         .catch((error) => {
-          sendResponse(asErrorResponse(toErrorMessage(error, 'Unexpected content script failure.')));
+          sendResponse(
+            asErrorResponse(
+              ERROR_CODE.INTERNAL_ERROR,
+              toErrorMessage(error, 'Unexpected content script failure.'),
+            ),
+          );
         });
 
       return true;
     }
 
-    sendResponse(asErrorResponse('Unknown content script message type.'));
+    sendResponse(asErrorResponse(ERROR_CODE.UNKNOWN_MESSAGE_TYPE, 'Unknown content script message type.'));
     return false;
   });
 

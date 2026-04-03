@@ -3,6 +3,7 @@ import {
   BG_TO_CONTENT,
   CONTENT_TO_BG,
   CONTROLLER_TO_BG,
+  ERROR_CODE,
   ROUTE_COMMAND,
   TAB_SCAN_SCOPE,
   WATCH_URL_PATTERNS,
@@ -13,6 +14,7 @@ import {
   type ContentPlayerEventMessage,
   type ControllerResponse,
   type ControllerToBackgroundMessage,
+  type ErrorCode,
   type ErrorResponse,
   type RouteCommand,
   type RouteCommandArgs,
@@ -24,10 +26,13 @@ import {
 
 const ROUTE_COMMAND_VALUES = Object.values(ROUTE_COMMAND) as RouteCommand[];
 const TAB_SCAN_SCOPE_VALUES = Object.values(TAB_SCAN_SCOPE) as TabScanScope[];
+const ERROR_CODE_VALUES = Object.values(ERROR_CODE) as ErrorCode[];
+const CONTROLLER_MESSAGE_TYPE_VALUES = Object.values(CONTROLLER_TO_BG) as string[];
 const CONTROLLER_WINDOW_WIDTH = 480;
 const CONTROLLER_WINDOW_HEIGHT = 760;
 const CONTENT_PING_MAX_RETRY = 8;
 const CONTENT_PING_RETRY_INTERVAL_MS = 120;
+const BG_TO_CONTENT_TIMEOUT_MS = 1500;
 
 const routesById = new Map<string, RouteState>();
 const routeIdByTabId = new Map<number, string>();
@@ -55,6 +60,10 @@ function isRouteCommand(value: unknown): value is RouteCommand {
   return typeof value === 'string' && ROUTE_COMMAND_VALUES.includes(value as RouteCommand);
 }
 
+function isErrorCode(value: unknown): value is ErrorCode {
+  return typeof value === 'string' && ERROR_CODE_VALUES.includes(value as ErrorCode);
+}
+
 function isRouteSnapshot(value: unknown): value is RouteSnapshot {
   if (!isObjectRecord(value)) {
     return false;
@@ -66,7 +75,15 @@ function isRouteSnapshot(value: unknown): value is RouteSnapshot {
     (value.status === 'loading' ||
       value.status === 'playing' ||
       value.status === 'paused' ||
-      value.status === 'buffering') &&
+      value.status === 'buffering' ||
+      value.status === 'ad' ||
+      value.status === 'ended') &&
+    (value.specialState === 'none' ||
+      value.specialState === 'ad' ||
+      value.specialState === 'live' ||
+      value.specialState === 'not-seekable' ||
+      value.specialState === 'no-video' ||
+      value.specialState === 'unknown') &&
     typeof value.currentTimeSec === 'number' &&
     (duration === null || typeof duration === 'number') &&
     typeof value.playbackRate === 'number' &&
@@ -97,9 +114,16 @@ function parseContentCommandResponse(value: unknown): ContentCommandResponse | n
     return null;
   }
 
+  if (!isErrorCode(value.errorCode) || typeof value.atMs !== 'number' || !Number.isFinite(value.atMs)) {
+    return null;
+  }
+
   return {
     ok: false,
+    errorCode: value.errorCode,
     error: value.error,
+    atMs: value.atMs,
+    details: typeof value.details === 'string' ? value.details : undefined,
   };
 }
 
@@ -394,6 +418,51 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
+class TimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TimeoutError';
+  }
+}
+
+class CodedError extends Error {
+  readonly code: ErrorCode;
+  readonly details?: string;
+
+  constructor(code: ErrorCode, message: string, details?: string) {
+    super(message);
+    this.name = 'CodedError';
+    this.code = code;
+    this.details = details;
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+  let timerId: number | null = null;
+
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timerId = setTimeout(() => {
+      reject(new TimeoutError(timeoutMessage));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (typeof timerId === 'number') {
+      clearTimeout(timerId);
+    }
+  }
+}
+
+function isTimeoutError(error: unknown): error is TimeoutError {
+  return error instanceof TimeoutError;
+}
+
+function isCodedError(error: unknown): error is CodedError {
+  return error instanceof CodedError;
+}
+
 function isReceivingEndMissingError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
@@ -570,8 +639,39 @@ async function listYouTubeTabs(scope: TabScanScope): Promise<CandidateTab[]> {
     .filter((tab): tab is CandidateTab => tab !== null);
 }
 
-function asErrorResponse(error: string): ErrorResponse {
-  return { ok: false, error };
+function asErrorResponse(errorCode: ErrorCode, error: string, details?: string): ErrorResponse {
+  const response: ErrorResponse = {
+    ok: false,
+    errorCode,
+    error,
+    atMs: Date.now(),
+  };
+
+  if (typeof details === 'string' && details) {
+    response.details = details;
+  }
+
+  return response;
+}
+
+function toErrorResponseFromUnknown(
+  error: unknown,
+  fallbackCode: ErrorCode,
+  fallbackMessage: string,
+): ErrorResponse {
+  if (isCodedError(error)) {
+    return asErrorResponse(error.code, error.message, error.details);
+  }
+
+  if (isTimeoutError(error)) {
+    return asErrorResponse(ERROR_CODE.TIMEOUT_CONTENT_RESPONSE, error.message);
+  }
+
+  return asErrorResponse(fallbackCode, toErrorMessage(error, fallbackMessage));
+}
+
+function formatErrorWithCode(response: ErrorResponse): string {
+  return `[${response.errorCode}] ${response.error}`;
 }
 
 async function ensureContentScriptInjected(tabId: number): Promise<void> {
@@ -580,11 +680,21 @@ async function ensureContentScriptInjected(tabId: number): Promise<void> {
   };
 
   try {
-    const existing = parseContentCommandResponse(await chrome.tabs.sendMessage(tabId, pingMessage));
+    const existing = parseContentCommandResponse(
+      await withTimeout(
+        chrome.tabs.sendMessage(tabId, pingMessage),
+        BG_TO_CONTENT_TIMEOUT_MS,
+        'Timed out while pinging content script.',
+      ),
+    );
     if (existing && existing.ok) {
       return;
     }
   } catch (error) {
+    if (isTimeoutError(error)) {
+      throw new CodedError(ERROR_CODE.TIMEOUT_CONTENT_RESPONSE, error.message);
+    }
+
     if (!isReceivingEndMissingError(error)) {
       throw error;
     }
@@ -593,22 +703,47 @@ async function ensureContentScriptInjected(tabId: number): Promise<void> {
   const contentScriptPath = chrome.runtime.getManifest().content_scripts?.[0]?.js?.[0];
 
   if (typeof contentScriptPath !== 'string' || !contentScriptPath) {
-    throw new Error('Content script path is missing from manifest.');
+    throw new CodedError(ERROR_CODE.CONTENT_SCRIPT_PATH_MISSING, 'Content script path is missing from manifest.');
   }
 
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    files: [contentScriptPath],
-  });
+  try {
+    await withTimeout(
+      chrome.scripting.executeScript({
+        target: { tabId },
+        files: [contentScriptPath],
+      }),
+      BG_TO_CONTENT_TIMEOUT_MS,
+      'Timed out while injecting content script.',
+    );
+  } catch (error) {
+    if (isTimeoutError(error)) {
+      throw new CodedError(ERROR_CODE.TIMEOUT_CONTENT_RESPONSE, error.message);
+    }
+
+    throw new CodedError(
+      ERROR_CODE.CONTENT_SCRIPT_INJECTION_FAILED,
+      toErrorMessage(error, 'Failed to inject content script.'),
+    );
+  }
 
   for (let attempt = 0; attempt < CONTENT_PING_MAX_RETRY; attempt += 1) {
     try {
-      const response = parseContentCommandResponse(await chrome.tabs.sendMessage(tabId, pingMessage));
+      const response = parseContentCommandResponse(
+        await withTimeout(
+          chrome.tabs.sendMessage(tabId, pingMessage),
+          BG_TO_CONTENT_TIMEOUT_MS,
+          'Timed out while waiting for content script ping.',
+        ),
+      );
 
       if (response && response.ok) {
         return;
       }
     } catch (error) {
+      if (isTimeoutError(error)) {
+        throw new CodedError(ERROR_CODE.TIMEOUT_CONTENT_RESPONSE, error.message);
+      }
+
       if (!isReceivingEndMissingError(error)) {
         throw error;
       }
@@ -617,7 +752,7 @@ async function ensureContentScriptInjected(tabId: number): Promise<void> {
     await sleep(CONTENT_PING_RETRY_INTERVAL_MS);
   }
 
-  throw new Error('Content script injection completed but ping timed out.');
+  throw new CodedError(ERROR_CODE.TIMEOUT_CONTENT_RESPONSE, 'Content script injection completed but ping timed out.');
 }
 
 function findRouteByTabId(tabId: number): RouteState | null {
@@ -660,16 +795,26 @@ async function importTab(tabId: number): Promise<ControllerResponse> {
     };
   }
 
-  const tab = await chrome.tabs.get(tabId);
+  let tab: chrome.tabs.Tab;
 
-  if (!tab || typeof tab.id !== 'number' || !isYouTubeWatchUrl(tab.url)) {
-    return asErrorResponse('Tab is unavailable or not a YouTube watch page.');
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch (error) {
+    return toErrorResponseFromUnknown(error, ERROR_CODE.TAB_NOT_AVAILABLE, 'Failed to resolve tab.');
+  }
+
+  if (!tab || typeof tab.id !== 'number') {
+    return asErrorResponse(ERROR_CODE.TAB_NOT_AVAILABLE, 'Tab is unavailable.');
+  }
+
+  if (!isYouTubeWatchUrl(tab.url)) {
+    return asErrorResponse(ERROR_CODE.TAB_NOT_WATCH_PAGE, 'Tab is not a YouTube watch page.');
   }
 
   try {
     await ensureContentScriptInjected(tab.id);
   } catch (error) {
-    return asErrorResponse(toErrorMessage(error, 'Failed to inject content script.'));
+    return toErrorResponseFromUnknown(error, ERROR_CODE.CONTENT_SCRIPT_INJECTION_FAILED, 'Failed to inject content script.');
   }
 
   const now = Date.now();
@@ -732,7 +877,7 @@ function setMainRouteWithEquivalentOffsets(routeId: string): ControllerResponse 
   const newMainRoute = routesById.get(routeId);
 
   if (!newMainRoute) {
-    return asErrorResponse('Route not found.');
+    return asErrorResponse(ERROR_CODE.ROUTE_NOT_FOUND, 'Route not found.');
   }
 
   const shiftSec = newMainRoute.offsetSec;
@@ -756,7 +901,7 @@ function setRouteOffset(routeId: string, offsetSec: number): ControllerResponse 
   const route = routesById.get(routeId);
 
   if (!route) {
-    return asErrorResponse('Route not found.');
+    return asErrorResponse(ERROR_CODE.ROUTE_NOT_FOUND, 'Route not found.');
   }
 
   route.offsetSec = normalizeOffsetSeconds(offsetSec);
@@ -774,7 +919,7 @@ async function setRouteVolume(routeId: string, volumePercent: number): Promise<C
   const route = routesById.get(routeId);
 
   if (!route) {
-    return asErrorResponse('Route not found.');
+    return asErrorResponse(ERROR_CODE.ROUTE_NOT_FOUND, 'Route not found.');
   }
 
   const normalizedVolumePercent = normalizeVolumePercent(volumePercent);
@@ -806,7 +951,7 @@ async function setRouteMuted(routeId: string, isMuted: boolean): Promise<Control
   const route = routesById.get(routeId);
 
   if (!route) {
-    return asErrorResponse('Route not found.');
+    return asErrorResponse(ERROR_CODE.ROUTE_NOT_FOUND, 'Route not found.');
   }
 
   const previousTargetMuted = route.targetMuted;
@@ -838,7 +983,7 @@ async function setRouteMuted(routeId: string, isMuted: boolean): Promise<Control
 
 async function setSoloRoute(routeId: string | null): Promise<ControllerResponse> {
   if (routeId !== null && !routesById.has(routeId)) {
-    return asErrorResponse('Route not found.');
+    return asErrorResponse(ERROR_CODE.ROUTE_NOT_FOUND, 'Route not found.');
   }
 
   sessionState.soloRouteId = routeId;
@@ -866,7 +1011,7 @@ async function setSoloRoute(routeId: string | null): Promise<ControllerResponse>
 async function focusRouteTab(routeId: string): Promise<ControllerResponse> {
   const route = routesById.get(routeId);
   if (!route) {
-    return asErrorResponse('Route not found.');
+    return asErrorResponse(ERROR_CODE.ROUTE_NOT_FOUND, 'Route not found.');
   }
 
   try {
@@ -895,7 +1040,7 @@ async function focusRouteTab(routeId: string): Promise<ControllerResponse> {
       session: buildSessionSnapshot(),
     };
   } catch (error) {
-    return asErrorResponse(toErrorMessage(error, 'Failed to focus route tab.'));
+    return toErrorResponseFromUnknown(error, ERROR_CODE.WINDOW_FOCUS_FAILED, 'Failed to focus route tab.');
   }
 }
 
@@ -907,7 +1052,7 @@ async function executeRouteCommand(
   const route = routesById.get(routeId);
 
   if (!route) {
-    return asErrorResponse('Route does not exist.');
+    return asErrorResponse(ERROR_CODE.ROUTE_NOT_FOUND, 'Route does not exist.');
   }
 
   try {
@@ -922,30 +1067,46 @@ async function executeRouteCommand(
     let rawResponse: unknown;
 
     try {
-      rawResponse = await chrome.tabs.sendMessage(route.tabId, message);
+      rawResponse = await withTimeout(
+        chrome.tabs.sendMessage(route.tabId, message),
+        BG_TO_CONTENT_TIMEOUT_MS,
+        'Timed out while waiting for content response.',
+      );
     } catch (error) {
+      if (isTimeoutError(error)) {
+        throw new CodedError(ERROR_CODE.TIMEOUT_CONTENT_RESPONSE, error.message);
+      }
+
       if (!isReceivingEndMissingError(error)) {
         throw error;
       }
 
       await ensureContentScriptInjected(route.tabId);
-      rawResponse = await chrome.tabs.sendMessage(route.tabId, message);
+      rawResponse = await withTimeout(
+        chrome.tabs.sendMessage(route.tabId, message),
+        BG_TO_CONTENT_TIMEOUT_MS,
+        'Timed out while waiting for content response after reinjection.',
+      );
     }
 
     const response = parseContentCommandResponse(rawResponse);
 
     if (!response) {
-      route.lastError = 'Malformed command response from content script.';
+      const malformedResponse = asErrorResponse(
+        ERROR_CODE.MALFORMED_CONTENT_RESPONSE,
+        'Malformed command response from content script.',
+      );
+      route.lastError = formatErrorWithCode(malformedResponse);
       route.updatedAtMs = Date.now();
       emitSessionUpdated('route-command-malformed-response');
-      return asErrorResponse(route.lastError);
+      return malformedResponse;
     }
 
     if (!response.ok) {
-      route.lastError = response.error;
+      route.lastError = formatErrorWithCode(response);
       route.updatedAtMs = Date.now();
       emitSessionUpdated('route-command-failed');
-      return asErrorResponse(response.error);
+      return response;
     }
 
     updateRouteSnapshot(route, response.snapshot);
@@ -957,11 +1118,16 @@ async function executeRouteCommand(
       snapshot: response.snapshot,
     };
   } catch (error) {
-    route.lastError = toErrorMessage(error, 'Failed to contact tab content script.');
+    const errorResponse = toErrorResponseFromUnknown(
+      error,
+      ERROR_CODE.CONTENT_UNREACHABLE,
+      'Failed to contact tab content script.',
+    );
+    route.lastError = formatErrorWithCode(errorResponse);
     route.updatedAtMs = Date.now();
     emitSessionUpdated('route-command-transport-error');
 
-    return asErrorResponse(route.lastError);
+    return errorResponse;
   }
 }
 
@@ -986,7 +1152,7 @@ async function handleControllerMessage(message: ControllerToBackgroundMessage): 
       const removed = removeRouteByRouteId(message.payload.routeId, 'route-removed-by-user');
 
       if (!removed) {
-        return asErrorResponse('Route not found.');
+        return asErrorResponse(ERROR_CODE.ROUTE_NOT_FOUND, 'Route not found.');
       }
 
       return { ok: true };
@@ -1021,7 +1187,7 @@ async function handleControllerMessage(message: ControllerToBackgroundMessage): 
       };
 
     default:
-      return asErrorResponse('Unknown controller message type.');
+      return asErrorResponse(ERROR_CODE.UNKNOWN_MESSAGE_TYPE, 'Unknown controller message type.');
   }
 }
 
@@ -1068,7 +1234,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const controllerMessage = parseControllerMessage(message);
 
   if (!controllerMessage) {
-    sendResponse(asErrorResponse('Malformed message.'));
+    const messageType = isObjectRecord(message) && typeof message.type === 'string' ? message.type : null;
+
+    if (!messageType) {
+      sendResponse(asErrorResponse(ERROR_CODE.MALFORMED_MESSAGE, 'Malformed message.'));
+      return false;
+    }
+
+    if (CONTROLLER_MESSAGE_TYPE_VALUES.includes(messageType)) {
+      sendResponse(asErrorResponse(ERROR_CODE.BAD_REQUEST, 'Malformed message payload.'));
+      return false;
+    }
+
+    sendResponse(asErrorResponse(ERROR_CODE.UNKNOWN_MESSAGE_TYPE, 'Unknown controller message type.'));
     return false;
   }
 
@@ -1077,10 +1255,51 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse(response);
     })
     .catch((error) => {
-      sendResponse(asErrorResponse(toErrorMessage(error, 'Background handler failed.')));
+      sendResponse(toErrorResponseFromUnknown(error, ERROR_CODE.INTERNAL_ERROR, 'Background handler failed.'));
     });
 
   return true;
+});
+
+chrome.tabs.onCreated.addListener((tab) => {
+  if (typeof tab.windowId === 'number' && tab.active && !isExtensionInternalUrl(tab.url)) {
+    sourceWindowId = tab.windowId;
+  }
+});
+
+chrome.tabs.onActivated.addListener((activeInfo) => {
+  if (activeInfo.windowId !== controllerWindowId) {
+    sourceWindowId = activeInfo.windowId;
+  }
+
+  void chrome.tabs
+    .get(activeInfo.tabId)
+    .then((tab) => {
+      const route = findRouteByTabId(activeInfo.tabId);
+      if (!route) {
+        return;
+      }
+
+      let didChange = false;
+
+      if (typeof tab.windowId === 'number' && route.windowId !== tab.windowId) {
+        route.windowId = tab.windowId;
+        didChange = true;
+      }
+
+      if (typeof tab.title === 'string' && tab.title && route.tabTitle !== tab.title) {
+        route.tabTitle = tab.title;
+        didChange = true;
+      }
+
+      if (didChange) {
+        route.updatedAtMs = Date.now();
+        emitSessionUpdated('tab-activated');
+      }
+    })
+    .catch(() => {
+      // Ignore tab lookup failure caused by rapid tab lifecycle changes.
+    });
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -1103,15 +1322,28 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     return;
   }
 
+  let didChange = false;
+
+  if (typeof tab.windowId === 'number' && route.windowId !== tab.windowId) {
+    route.windowId = tab.windowId;
+    didChange = true;
+  }
+
   if (typeof tab.title === 'string') {
-    route.tabTitle = tab.title;
+    if (route.tabTitle !== tab.title) {
+      route.tabTitle = tab.title;
+      didChange = true;
+    }
 
     if (!route.videoTitle) {
       route.videoTitle = tab.title;
+      didChange = true;
     }
+  }
 
+  if (didChange) {
     route.updatedAtMs = Date.now();
-    emitSessionUpdated('tab-title-updated');
+    emitSessionUpdated('tab-updated');
   }
 });
 
