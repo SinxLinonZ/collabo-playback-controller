@@ -42,6 +42,7 @@ const AUTO_SYNC_MINOR_DRIFT_SEC = 0.3;
 const AUTO_SYNC_HARD_DRIFT_SEC = 1.0;
 const AUTO_SYNC_HARD_COOLDOWN_MS = 3000;
 const AUTO_SYNC_MAX_RATE_DELTA = 0.02;
+const VOLUME_SLIDER_DEBOUNCE_MS = 180;
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -272,6 +273,8 @@ export default function App() {
   const autoSyncTickRunningRef = useRef(false);
   const lastHardCorrectionAtMsRef = useRef<Record<string, number>>({});
   const lastPlaybackRateByRouteIdRef = useRef<Record<string, number>>({});
+  const volumeDebounceTimerByRouteIdRef = useRef<Record<string, number>>({});
+  const pendingVolumeByRouteIdRef = useRef<Record<string, number>>({});
 
   const setStatus = useCallback((text: string): void => {
     setStatusText(text);
@@ -467,10 +470,18 @@ export default function App() {
   );
 
   const handleSetRouteVolume = useCallback(
-    async (routeId: string, volumePercent: number): Promise<void> => {
+    async (
+      routeId: string,
+      volumePercent: number,
+      options: { silent?: boolean } = {},
+    ): Promise<void> => {
       try {
+        const { silent = false } = options;
         const normalizedVolumePercent = normalizeVolumePercent(volumePercent);
-        setStatus(`Updating volume for ${routeId} to ${normalizedVolumePercent}%...`);
+
+        if (!silent) {
+          setStatus(`Updating volume for ${routeId} to ${normalizedVolumePercent}%...`);
+        }
 
         const response = await sendToBackground({
           type: CONTROLLER_TO_BG.SET_ROUTE_VOLUME,
@@ -494,7 +505,10 @@ export default function App() {
         }));
 
         applySessionSnapshot(response.session);
-        setStatus(`Volume updated for ${routeId}: ${normalizedVolumePercent}%.`);
+
+        if (!silent) {
+          setStatus(`Volume updated for ${routeId}: ${normalizedVolumePercent}%.`);
+        }
       } catch (error) {
         setStatus(toErrorMessage(error, 'Set route volume failed.'));
       }
@@ -930,6 +944,56 @@ export default function App() {
     });
   }, [autoSyncCorrectionEnabled, handleRouteCommand, refreshSession, setStatus, viewState.session.routes]);
 
+  const scheduleRouteVolumeCommit = useCallback(
+    (routeId: string, volumePercent: number): void => {
+      const normalizedVolumePercent = normalizeVolumePercent(volumePercent);
+      pendingVolumeByRouteIdRef.current[routeId] = normalizedVolumePercent;
+
+      const existingTimerId = volumeDebounceTimerByRouteIdRef.current[routeId];
+      if (typeof existingTimerId === 'number') {
+        window.clearTimeout(existingTimerId);
+      }
+
+      volumeDebounceTimerByRouteIdRef.current[routeId] = window.setTimeout(() => {
+        delete volumeDebounceTimerByRouteIdRef.current[routeId];
+
+        const pendingVolumePercent = pendingVolumeByRouteIdRef.current[routeId];
+        if (typeof pendingVolumePercent !== 'number') {
+          return;
+        }
+
+        delete pendingVolumeByRouteIdRef.current[routeId];
+        void handleSetRouteVolume(routeId, pendingVolumePercent, { silent: true });
+      }, VOLUME_SLIDER_DEBOUNCE_MS);
+    },
+    [handleSetRouteVolume],
+  );
+
+  const flushRouteVolumeCommit = useCallback(
+    (routeId: string, draftValue: string): void => {
+      const existingTimerId = volumeDebounceTimerByRouteIdRef.current[routeId];
+      if (typeof existingTimerId === 'number') {
+        window.clearTimeout(existingTimerId);
+        delete volumeDebounceTimerByRouteIdRef.current[routeId];
+      }
+
+      const pendingVolumePercent = pendingVolumeByRouteIdRef.current[routeId];
+      if (typeof pendingVolumePercent === 'number') {
+        delete pendingVolumeByRouteIdRef.current[routeId];
+        void handleSetRouteVolume(routeId, pendingVolumePercent, { silent: true });
+        return;
+      }
+
+      const parsedVolumePercent = parseVolumeInputToPercent(draftValue);
+      if (parsedVolumePercent === null) {
+        return;
+      }
+
+      void handleSetRouteVolume(routeId, parsedVolumePercent, { silent: true });
+    },
+    [handleSetRouteVolume],
+  );
+
   useEffect(() => {
     setRouteOffsetDrafts((prev) => {
       const next: Record<string, string> = {};
@@ -958,6 +1022,18 @@ export default function App() {
     });
   }, [editingRouteVolumes, viewState.session.routes]);
 
+  useEffect(
+    () => () => {
+      const timerIds = Object.values(volumeDebounceTimerByRouteIdRef.current);
+      timerIds.forEach((timerId) => {
+        window.clearTimeout(timerId);
+      });
+      volumeDebounceTimerByRouteIdRef.current = {};
+      pendingVolumeByRouteIdRef.current = {};
+    },
+    [],
+  );
+
   useEffect(() => {
     setRouteRuntimeById((prev) => {
       const next: Record<string, RouteRuntimeState> = {};
@@ -984,6 +1060,22 @@ export default function App() {
     Object.keys(lastPlaybackRateByRouteIdRef.current).forEach((routeId) => {
       if (!activeRouteIds.has(routeId)) {
         delete lastPlaybackRateByRouteIdRef.current[routeId];
+      }
+    });
+
+    Object.keys(volumeDebounceTimerByRouteIdRef.current).forEach((routeId) => {
+      if (!activeRouteIds.has(routeId)) {
+        const timerId = volumeDebounceTimerByRouteIdRef.current[routeId];
+        if (typeof timerId === 'number') {
+          window.clearTimeout(timerId);
+        }
+        delete volumeDebounceTimerByRouteIdRef.current[routeId];
+      }
+    });
+
+    Object.keys(pendingVolumeByRouteIdRef.current).forEach((routeId) => {
+      if (!activeRouteIds.has(routeId)) {
+        delete pendingVolumeByRouteIdRef.current[routeId];
       }
     });
   }, [viewState.session.routes]);
@@ -1370,65 +1462,50 @@ export default function App() {
                       {route.targetMuted ? 'Base Unmute' : 'Base Mute'}
                     </button>
 
-                    <input
-                      type="number"
-                      className="volume-input"
-                      min={0}
-                      max={100}
-                      step={1}
-                      inputMode="numeric"
-                      value={routeVolumeValue}
-                      onChange={(event) => {
-                        const nextValue = event.target.value;
-                        setRouteVolumeDrafts((prev) => ({
-                          ...prev,
-                          [route.routeId]: nextValue,
-                        }));
-                      }}
-                      onFocus={() => {
-                        setEditingRouteVolumes((prev) => ({
-                          ...prev,
-                          [route.routeId]: true,
-                        }));
-                      }}
-                      onBlur={() => {
-                        setEditingRouteVolumes((prev) => ({
-                          ...prev,
-                          [route.routeId]: false,
-                        }));
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          event.preventDefault();
-
-                          const parsedVolumePercent = parseVolumeInputToPercent(routeVolumeValue);
+                    <div className="volume-slider-group">
+                      <input
+                        type="range"
+                        className="volume-slider"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={routeVolumeValue}
+                        onChange={(event) => {
+                          const nextValue = event.target.value;
+                          const parsedVolumePercent = parseVolumeInputToPercent(nextValue);
                           if (parsedVolumePercent === null) {
-                            setStatus('Volume invalid. Use a number between 0 and 100.');
                             return;
                           }
 
-                          void handleSetRouteVolume(route.routeId, parsedVolumePercent);
-                        }
-                      }}
-                    />
-                    <button
-                      type="button"
-                      onMouseDown={(event) => {
-                        // Keep the input focused until click, so blur side effects do not race submission.
-                        event.preventDefault();
-                      }}
-                      onClick={() => {
-                        const parsedVolumePercent = parseVolumeInputToPercent(routeVolumeValue);
-                        if (parsedVolumePercent === null) {
-                          setStatus('Volume invalid. Use a number between 0 and 100.');
-                          return;
-                        }
-
-                        void handleSetRouteVolume(route.routeId, parsedVolumePercent);
-                      }}
-                    >
-                      Apply Vol
-                    </button>
+                          setRouteVolumeDrafts((prev) => ({
+                            ...prev,
+                            [route.routeId]: String(parsedVolumePercent),
+                          }));
+                          setEditingRouteVolumes((prev) => ({
+                            ...prev,
+                            [route.routeId]: true,
+                          }));
+                          scheduleRouteVolumeCommit(route.routeId, parsedVolumePercent);
+                        }}
+                        onFocus={() => {
+                          setEditingRouteVolumes((prev) => ({
+                            ...prev,
+                            [route.routeId]: true,
+                          }));
+                        }}
+                        onBlur={() => {
+                          setEditingRouteVolumes((prev) => ({
+                            ...prev,
+                            [route.routeId]: false,
+                          }));
+                          flushRouteVolumeCommit(route.routeId, routeVolumeValue);
+                        }}
+                        onPointerUp={() => {
+                          flushRouteVolumeCommit(route.routeId, routeVolumeValue);
+                        }}
+                      />
+                      <span className="volume-value">{`${routeVolumeValue}%`}</span>
+                    </div>
 
                     <button
                       type="button"
