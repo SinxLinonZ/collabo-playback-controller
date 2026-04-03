@@ -288,6 +288,67 @@ function formatDrift(driftSec: number | null): string {
   return `${sign}${driftSec.toFixed(3)}s`;
 }
 
+function formatSyncStatusLabel(status: RouteSyncStatus): string {
+  return status.replaceAll('-', ' ');
+}
+
+function getRouteStatusBadgeColor(status: RouteState['status']): string {
+  switch (status) {
+    case 'playing':
+      return 'green';
+    case 'paused':
+      return 'gray';
+    case 'buffering':
+      return 'yellow';
+    case 'ad':
+      return 'orange';
+    case 'ended':
+      return 'indigo';
+    case 'error':
+      return 'red';
+    case 'loading':
+    default:
+      return 'blue';
+  }
+}
+
+function getSyncStatusBadgeColor(status: RouteSyncStatus): string {
+  switch (status) {
+    case 'synced':
+      return 'green';
+    case 'minor-drift':
+      return 'lime';
+    case 'soft-correcting':
+      return 'yellow';
+    case 'hard-correcting':
+      return 'orange';
+    case 'severe-drift':
+      return 'red';
+    case 'error':
+      return 'red';
+    case 'unknown':
+    default:
+      return 'gray';
+  }
+}
+
+function getDriftBadgeColor(driftSec: number | null): string {
+  if (driftSec === null || !Number.isFinite(driftSec)) {
+    return 'gray';
+  }
+
+  const absDriftSec = Math.abs(driftSec);
+  if (absDriftSec < AUTO_SYNC_STABLE_DRIFT_SEC) {
+    return 'green';
+  }
+
+  if (absDriftSec < AUTO_SYNC_HARD_DRIFT_SEC) {
+    return 'yellow';
+  }
+
+  return 'red';
+}
+
 function isRouteCardInteractiveTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) {
     return false;
@@ -1686,6 +1747,14 @@ export default function App() {
                 const routeVolumePercent =
                   parseVolumeInputToPercent(routeVolumeValue) ?? normalizeVolumePercent(route.targetVolumePercent);
                 const runtimeState = routeRuntimeById[route.routeId];
+                const syncStatus = runtimeState?.syncStatus ?? 'unknown';
+                const driftSec = runtimeState?.driftSec ?? null;
+                const audioStateLabel = isForcedMutedBySolo
+                  ? 'Muted by solo'
+                  : route.appliedMuted
+                    ? 'Muted'
+                    : 'Audible';
+                const audioStateColor = isForcedMutedBySolo || route.appliedMuted ? 'gray' : 'green';
 
                 return (
                   <Paper
@@ -1706,258 +1775,300 @@ export default function App() {
                       void handleFocusRouteTab(route.routeId);
                     }}
                   >
-                    <Group justify="space-between" align="flex-start" wrap="nowrap" className="card-head">
-                      <Group gap="xs" align="center">
-                        <Text fw={600} className="title">
-                          {route.videoTitle || route.tabTitle || '(Unknown title)'}
-                        </Text>
-                        {isMainRoute ? (
-                          <Badge size="xs" color="green" variant="light">
-                            MAIN
-                          </Badge>
-                        ) : null}
-                        {isSoloRoute ? (
-                          <Badge size="xs" color="yellow" variant="light">
-                            SOLO
-                          </Badge>
-                        ) : null}
-                      </Group>
-                      <Button
-                        type="button"
-                        size="xs"
-                        color="red"
-                        variant="light"
-                        leftSection={<FiTrash2 size={13} />}
-                        onClick={() => {
-                          void handleRemoveRoute(route.routeId);
-                        }}
-                      >
-                        Remove
-                      </Button>
-                    </Group>
-
-                    <Text className="meta">
-                      {[
-                        `route:${route.routeId}`,
-                        `tab:${route.tabId}`,
-                        `status:${route.status}`,
-                        `time:${formatTime(route.currentTimeSec)}`,
-                        `offset:${normalizeOffsetSeconds(route.offsetSec).toFixed(2)}s`,
-                        `vol:${normalizeVolumePercent(route.targetVolumePercent)}%`,
-                        `baseMute:${route.targetMuted ? 'on' : 'off'}`,
-                        `appliedMute:${route.appliedMuted ? 'on' : 'off'}`,
-                        `drift:${formatDrift(runtimeState?.driftSec ?? null)}`,
-                        `sync:${runtimeState?.syncStatus ?? 'unknown'}`,
-                      ].join(' | ')}
-                    </Text>
-
-                    {runtimeState?.lastError ? (
-                      <Text className="meta error-meta">{`sync-error:${runtimeState.lastError}`}</Text>
-                    ) : null}
-
-                    <Group gap="xs" wrap="wrap" className="offset-controls">
-                      <TextInput
-                        className="offset-input"
-                        inputMode="decimal"
-                        placeholder="offset sec"
-                        title="Supports signed seconds or signed mm:ss / hh:mm:ss"
-                        value={routeOffsetValue}
-                        onChange={(event) => {
-                          const nextValue = event.currentTarget.value;
-                          setRouteOffsetDrafts((prev) => ({
-                            ...prev,
-                            [route.routeId]: nextValue,
-                          }));
-                        }}
-                        onFocus={() => {
-                          setEditingRouteOffsets((prev) => ({
-                            ...prev,
-                            [route.routeId]: true,
-                          }));
-                        }}
-                        onBlur={() => {
-                          setEditingRouteOffsets((prev) => ({
-                            ...prev,
-                            [route.routeId]: false,
-                          }));
-                        }}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            event.preventDefault();
-
-                            const parsedOffset = parseOffsetInputToSeconds(routeOffsetValue);
-                            if (parsedOffset === null) {
-                              setStatus('Offset invalid. Use signed seconds, mm:ss, or hh:mm:ss.');
-                              return;
-                            }
-
-                            void handleSetRouteOffset(route.routeId, parsedOffset);
-                          }
-                        }}
-                      />
-                      <Button
-                        size="xs"
-                        onMouseDown={(event) => {
-                          // Keep the input focused until click, so blur side effects do not race submission.
-                          event.preventDefault();
-                        }}
-                        onClick={() => {
-                          const parsedOffset = parseOffsetInputToSeconds(routeOffsetValue);
-                          if (parsedOffset === null) {
-                            setStatus('Offset invalid. Use signed seconds, mm:ss, or hh:mm:ss.');
-                            return;
-                          }
-
-                          void handleSetRouteOffset(route.routeId, parsedOffset);
-                        }}
-                      >
-                        Apply Offset
-                      </Button>
-
-                      <Group gap="xs" wrap="wrap" className="offset-step-actions">
-                        {[
-                          { label: '-1s', delta: -1 },
-                          { label: '-0.1s', delta: -0.1 },
-                          { label: '+0.1s', delta: 0.1 },
-                          { label: '+1s', delta: 1 },
-                        ].map((step) => (
-                          <Button
-                            key={step.label}
+                    <Stack gap={8}>
+                      <Group justify="space-between" align="flex-start" wrap="nowrap" className="card-head">
+                        <Stack gap={4} className="title-stack">
+                          <Group gap={6} align="center" wrap="wrap">
+                            <Text fw={600} className="title">
+                              {route.videoTitle || route.tabTitle || '(Unknown title)'}
+                            </Text>
+                            {isMainRoute ? (
+                              <Badge size="xs" color="green" variant="light">
+                                MAIN
+                              </Badge>
+                            ) : null}
+                            {isSoloRoute ? (
+                              <Badge size="xs" color="yellow" variant="light">
+                                SOLO
+                              </Badge>
+                            ) : null}
+                          </Group>
+                          <Text
                             size="xs"
-                            variant="default"
+                            c="dimmed"
+                            className="compact-meta"
+                            lineClamp={1}
+                            title={`route:${route.routeId} | tab:${route.tabId} | ${route.url}`}
+                          >
+                            {`route:${route.routeId} | tab:${route.tabId} | ${route.url}`}
+                          </Text>
+                        </Stack>
+
+                        <Group gap={6} wrap="nowrap">
+                          <Button
+                            type="button"
+                            size="xs"
+                            variant={isMainRoute ? 'light' : 'default'}
+                            disabled={isMainRoute}
                             onClick={() => {
-                              const fromInput = parseOffsetInputToSeconds(routeOffsetValue);
-                              const baseOffset = fromInput ?? route.offsetSec;
-                              const nextOffset = normalizeOffsetSeconds(baseOffset + step.delta);
-                              void handleSetRouteOffset(route.routeId, nextOffset);
+                              void handleSetMainRoute(route.routeId);
                             }}
                           >
-                            {step.label}
+                            {isMainRoute ? 'Main' : 'Set Main'}
                           </Button>
-                        ))}
+                          <Button
+                            type="button"
+                            size="xs"
+                            color="red"
+                            variant="light"
+                            leftSection={<FiTrash2 size={13} />}
+                            onClick={() => {
+                              void handleRemoveRoute(route.routeId);
+                            }}
+                          >
+                            Remove
+                          </Button>
+                        </Group>
+                      </Group>
+
+                      <Group gap={6} wrap="wrap" className="route-kpis">
+                        <Badge size="sm" color={getRouteStatusBadgeColor(route.status)} variant="light">
+                          {`status: ${route.status}`}
+                        </Badge>
+                        <Badge size="sm" color={getSyncStatusBadgeColor(syncStatus)} variant="light">
+                          {`sync: ${formatSyncStatusLabel(syncStatus)}`}
+                        </Badge>
+                        <Badge size="sm" color={getDriftBadgeColor(driftSec)} variant="light">
+                          {`drift: ${formatDrift(driftSec)}`}
+                        </Badge>
+                        <Badge size="sm" color="gray" variant="light">
+                          {`time: ${formatTime(route.currentTimeSec)}`}
+                        </Badge>
+                        <Badge size="sm" color="gray" variant="light">
+                          {`offset: ${normalizeOffsetSeconds(route.offsetSec).toFixed(2)}s`}
+                        </Badge>
+                        <Badge size="sm" color="gray" variant="light">
+                          {`vol: ${normalizeVolumePercent(route.targetVolumePercent)}%`}
+                        </Badge>
+                        <Badge size="sm" color={audioStateColor} variant="light">
+                          {audioStateLabel}
+                        </Badge>
+                      </Group>
+
+                      {runtimeState?.lastError ? (
+                        <Paper withBorder radius="sm" p={6} className="route-error-box">
+                          <Text className="meta error-meta">{`sync-error:${runtimeState.lastError}`}</Text>
+                        </Paper>
+                      ) : null}
+
+                      <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="xs">
+                        <Paper withBorder radius="sm" p="xs" className="control-block">
+                          <Stack gap={6}>
+                            <Text size="xs" fw={600} c="dimmed">
+                              Offset
+                            </Text>
+                            <Group gap="xs" wrap="wrap" className="offset-controls">
+                              <TextInput
+                                className="offset-input"
+                                inputMode="decimal"
+                                placeholder="offset sec"
+                                title="Supports signed seconds or signed mm:ss / hh:mm:ss"
+                                value={routeOffsetValue}
+                                onChange={(event) => {
+                                  const nextValue = event.currentTarget.value;
+                                  setRouteOffsetDrafts((prev) => ({
+                                    ...prev,
+                                    [route.routeId]: nextValue,
+                                  }));
+                                }}
+                                onFocus={() => {
+                                  setEditingRouteOffsets((prev) => ({
+                                    ...prev,
+                                    [route.routeId]: true,
+                                  }));
+                                }}
+                                onBlur={() => {
+                                  setEditingRouteOffsets((prev) => ({
+                                    ...prev,
+                                    [route.routeId]: false,
+                                  }));
+                                }}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter') {
+                                    event.preventDefault();
+
+                                    const parsedOffset = parseOffsetInputToSeconds(routeOffsetValue);
+                                    if (parsedOffset === null) {
+                                      setStatus('Offset invalid. Use signed seconds, mm:ss, or hh:mm:ss.');
+                                      return;
+                                    }
+
+                                    void handleSetRouteOffset(route.routeId, parsedOffset);
+                                  }
+                                }}
+                              />
+                              <Button
+                                size="xs"
+                                onMouseDown={(event) => {
+                                  // Keep the input focused until click, so blur side effects do not race submission.
+                                  event.preventDefault();
+                                }}
+                                onClick={() => {
+                                  const parsedOffset = parseOffsetInputToSeconds(routeOffsetValue);
+                                  if (parsedOffset === null) {
+                                    setStatus('Offset invalid. Use signed seconds, mm:ss, or hh:mm:ss.');
+                                    return;
+                                  }
+
+                                  void handleSetRouteOffset(route.routeId, parsedOffset);
+                                }}
+                              >
+                                Apply
+                              </Button>
+                            </Group>
+
+                            <Group gap="xs" wrap="wrap" className="offset-step-actions">
+                              {[
+                                { label: '-1s', delta: -1 },
+                                { label: '-0.1s', delta: -0.1 },
+                                { label: '+0.1s', delta: 0.1 },
+                                { label: '+1s', delta: 1 },
+                              ].map((step) => (
+                                <Button
+                                  key={step.label}
+                                  size="xs"
+                                  variant="default"
+                                  onClick={() => {
+                                    const fromInput = parseOffsetInputToSeconds(routeOffsetValue);
+                                    const baseOffset = fromInput ?? route.offsetSec;
+                                    const nextOffset = normalizeOffsetSeconds(baseOffset + step.delta);
+                                    void handleSetRouteOffset(route.routeId, nextOffset);
+                                  }}
+                                >
+                                  {step.label}
+                                </Button>
+                              ))}
+                              <Button
+                                size="xs"
+                                variant="default"
+                                onClick={() => {
+                                  void handleSetRouteOffset(route.routeId, 0);
+                                }}
+                              >
+                                Offset 0
+                              </Button>
+                            </Group>
+                          </Stack>
+                        </Paper>
+
+                        <Paper withBorder radius="sm" p="xs" className="control-block">
+                          <Stack gap={6}>
+                            <Text size="xs" fw={600} c="dimmed">
+                              Audio
+                            </Text>
+
+                            <Group gap="xs" wrap="wrap" align="center" className="audio-controls">
+                              <Button
+                                size="xs"
+                                variant="default"
+                                onClick={() => {
+                                  void handleSetRouteMuted(route.routeId, !route.targetMuted);
+                                }}
+                              >
+                                {route.targetMuted ? 'Base Unmute' : 'Base Mute'}
+                              </Button>
+
+                              <Button
+                                size="xs"
+                                variant={isSoloRoute ? 'filled' : 'default'}
+                                onClick={() => {
+                                  void handleSetSoloRoute(isSoloRoute ? null : route.routeId);
+                                }}
+                              >
+                                {isSoloRoute ? 'Unsolo' : 'Solo'}
+                              </Button>
+
+                              <Text className="audio-meta">{audioStateLabel}</Text>
+                            </Group>
+
+                            <Box data-prevent-route-focus="true" className="volume-slider-group">
+                              <Slider
+                                className="volume-slider"
+                                min={0}
+                                max={100}
+                                step={1}
+                                value={routeVolumePercent}
+                                onChange={(nextValue) => {
+                                  const parsedVolumePercent = parseVolumeInputToPercent(String(nextValue));
+                                  if (parsedVolumePercent === null) {
+                                    return;
+                                  }
+
+                                  setRouteVolumeDrafts((prev) => ({
+                                    ...prev,
+                                    [route.routeId]: String(parsedVolumePercent),
+                                  }));
+                                  setEditingRouteVolumes((prev) => ({
+                                    ...prev,
+                                    [route.routeId]: true,
+                                  }));
+                                  scheduleRouteVolumeCommit(route.routeId, parsedVolumePercent);
+                                }}
+                                onChangeEnd={(nextValue) => {
+                                  setEditingRouteVolumes((prev) => ({
+                                    ...prev,
+                                    [route.routeId]: false,
+                                  }));
+                                  flushRouteVolumeCommit(route.routeId, String(nextValue));
+                                }}
+                              />
+                              <Text className="volume-value">{`${routeVolumePercent}%`}</Text>
+                            </Box>
+                          </Stack>
+                        </Paper>
+                      </SimpleGrid>
+
+                      <Group gap="xs" wrap="wrap" className="card-actions">
                         <Button
+                          type="button"
                           size="xs"
-                          variant="default"
+                          leftSection={<FiPlay size={13} />}
                           onClick={() => {
-                            void handleSetRouteOffset(route.routeId, 0);
+                            void handleRouteCommand(route.routeId, ROUTE_COMMAND.PLAY).catch((error) => {
+                              setStatus(toErrorMessage(error, 'Play failed.'));
+                            });
                           }}
                         >
-                          Offset 0
+                          Play
+                        </Button>
+                        <Button
+                          type="button"
+                          size="xs"
+                          color="gray"
+                          leftSection={<FiPause size={13} />}
+                          onClick={() => {
+                            void handleRouteCommand(route.routeId, ROUTE_COMMAND.PAUSE).catch((error) => {
+                              setStatus(toErrorMessage(error, 'Pause failed.'));
+                            });
+                          }}
+                        >
+                          Pause
+                        </Button>
+                        <Button
+                          type="button"
+                          size="xs"
+                          variant="default"
+                          leftSection={<FiRefreshCw size={13} />}
+                          onClick={() => {
+                            void handleRouteCommand(route.routeId, ROUTE_COMMAND.GET_STATUS).catch((error) => {
+                              setStatus(toErrorMessage(error, 'Pull status failed.'));
+                            });
+                          }}
+                        >
+                          Pull Status
                         </Button>
                       </Group>
-                    </Group>
-
-                    <Group gap="xs" wrap="wrap" align="center" className="audio-controls">
-                      <Button
-                        size="xs"
-                        variant="default"
-                        onClick={() => {
-                          void handleSetRouteMuted(route.routeId, !route.targetMuted);
-                        }}
-                      >
-                        {route.targetMuted ? 'Base Unmute' : 'Base Mute'}
-                      </Button>
-
-                      <Box data-prevent-route-focus="true" className="volume-slider-group">
-                        <Slider
-                          className="volume-slider"
-                          min={0}
-                          max={100}
-                          step={1}
-                          value={routeVolumePercent}
-                          onChange={(nextValue) => {
-                            const parsedVolumePercent = parseVolumeInputToPercent(String(nextValue));
-                            if (parsedVolumePercent === null) {
-                              return;
-                            }
-
-                            setRouteVolumeDrafts((prev) => ({
-                              ...prev,
-                              [route.routeId]: String(parsedVolumePercent),
-                            }));
-                            setEditingRouteVolumes((prev) => ({
-                              ...prev,
-                              [route.routeId]: true,
-                            }));
-                            scheduleRouteVolumeCommit(route.routeId, parsedVolumePercent);
-                          }}
-                          onChangeEnd={(nextValue) => {
-                            setEditingRouteVolumes((prev) => ({
-                              ...prev,
-                              [route.routeId]: false,
-                            }));
-                            flushRouteVolumeCommit(route.routeId, String(nextValue));
-                          }}
-                        />
-                        <Text className="volume-value">{`${routeVolumePercent}%`}</Text>
-                      </Box>
-
-                      <Button
-                        size="xs"
-                        variant={isSoloRoute ? 'filled' : 'default'}
-                        onClick={() => {
-                          void handleSetSoloRoute(isSoloRoute ? null : route.routeId);
-                        }}
-                      >
-                        {isSoloRoute ? 'Unsolo' : 'Solo'}
-                      </Button>
-
-                      <Text className="audio-meta">
-                        {isForcedMutedBySolo ? 'Muted by solo' : route.appliedMuted ? 'Muted' : 'Audible'}
-                      </Text>
-                    </Group>
-
-                    <Group gap="xs" wrap="wrap" className="card-actions">
-                      <Button
-                        type="button"
-                        size="xs"
-                        variant={isMainRoute ? 'light' : 'default'}
-                        disabled={isMainRoute}
-                        onClick={() => {
-                          void handleSetMainRoute(route.routeId);
-                        }}
-                      >
-                        {isMainRoute ? 'Main Route' : 'Set Main'}
-                      </Button>
-                      <Button
-                        type="button"
-                        size="xs"
-                        leftSection={<FiPlay size={13} />}
-                        onClick={() => {
-                          void handleRouteCommand(route.routeId, ROUTE_COMMAND.PLAY).catch((error) => {
-                            setStatus(toErrorMessage(error, 'Play failed.'));
-                          });
-                        }}
-                      >
-                        Play
-                      </Button>
-                      <Button
-                        type="button"
-                        size="xs"
-                        color="gray"
-                        leftSection={<FiPause size={13} />}
-                        onClick={() => {
-                          void handleRouteCommand(route.routeId, ROUTE_COMMAND.PAUSE).catch((error) => {
-                            setStatus(toErrorMessage(error, 'Pause failed.'));
-                          });
-                        }}
-                      >
-                        Pause
-                      </Button>
-                      <Button
-                        type="button"
-                        size="xs"
-                        variant="default"
-                        leftSection={<FiRefreshCw size={13} />}
-                        onClick={() => {
-                          void handleRouteCommand(route.routeId, ROUTE_COMMAND.GET_STATUS).catch((error) => {
-                            setStatus(toErrorMessage(error, 'Pull status failed.'));
-                          });
-                        }}
-                      >
-                        Pull Status
-                      </Button>
-                    </Group>
+                    </Stack>
                   </Paper>
                 );
               })

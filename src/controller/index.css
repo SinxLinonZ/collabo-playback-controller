@@ -65,6 +65,11 @@ body {
   gap: 8px;
 }
 
+.title-stack {
+  min-width: 0;
+  flex: 1;
+}
+
 .candidate-title {
   min-width: 0;
   flex: 1;
@@ -72,6 +77,22 @@ body {
 
 .title {
   word-break: break-word;
+}
+
+.compact-meta {
+  word-break: break-all;
+}
+
+.route-kpis {
+  row-gap: 4px;
+}
+
+.route-error-box {
+  background: color-mix(in srgb, #fff4e8 70%, var(--surface) 30%);
+}
+
+.control-block {
+  background: color-mix(in srgb, var(--surface) 86%, #f2f8ff 14%);
 }
 
 .meta {
