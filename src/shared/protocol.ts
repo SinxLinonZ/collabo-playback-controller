@@ -5,6 +5,9 @@ export const CONTROLLER_TO_BG = {
   REMOVE_ROUTE: 'controller/remove-route',
   SET_MAIN_ROUTE: 'controller/set-main-route',
   SET_ROUTE_OFFSET: 'controller/set-route-offset',
+  SET_ROUTE_VOLUME: 'controller/set-route-volume',
+  SET_ROUTE_MUTED: 'controller/set-route-muted',
+  SET_SOLO_ROUTE: 'controller/set-solo-route',
   ROUTE_COMMAND: 'controller/route-command',
   GET_SESSION: 'controller/get-session',
 } as const;
@@ -73,6 +76,9 @@ export interface RouteState {
   videoTitle: string;
   url: string;
   offsetSec: number;
+  targetVolumePercent: number;
+  targetMuted: boolean;
+  appliedMuted: boolean;
   status: RouteStatus;
   currentTimeSec: number;
   durationSec: number | null;
@@ -130,6 +136,29 @@ export interface ControllerSetRouteOffsetMessage {
   };
 }
 
+export interface ControllerSetRouteVolumeMessage {
+  type: (typeof CONTROLLER_TO_BG)['SET_ROUTE_VOLUME'];
+  payload: {
+    routeId: string;
+    volumePercent: number;
+  };
+}
+
+export interface ControllerSetRouteMutedMessage {
+  type: (typeof CONTROLLER_TO_BG)['SET_ROUTE_MUTED'];
+  payload: {
+    routeId: string;
+    isMuted: boolean;
+  };
+}
+
+export interface ControllerSetSoloRouteMessage {
+  type: (typeof CONTROLLER_TO_BG)['SET_SOLO_ROUTE'];
+  payload: {
+    routeId: string | null;
+  };
+}
+
 export interface ControllerRouteCommandMessage {
   type: (typeof CONTROLLER_TO_BG)['ROUTE_COMMAND'];
   payload: {
@@ -150,6 +179,9 @@ export type ControllerToBackgroundMessage =
   | ControllerRemoveRouteMessage
   | ControllerSetMainRouteMessage
   | ControllerSetRouteOffsetMessage
+  | ControllerSetRouteVolumeMessage
+  | ControllerSetRouteMutedMessage
+  | ControllerSetSoloRouteMessage
   | ControllerRouteCommandMessage
   | ControllerGetSessionMessage;
 
@@ -185,6 +217,18 @@ export interface SetRouteOffsetResponse extends SuccessResponseBase {
   session: SessionSnapshot;
 }
 
+export interface SetRouteVolumeResponse extends SuccessResponseBase {
+  session: SessionSnapshot;
+}
+
+export interface SetRouteMutedResponse extends SuccessResponseBase {
+  session: SessionSnapshot;
+}
+
+export interface SetSoloRouteResponse extends SuccessResponseBase {
+  session: SessionSnapshot;
+}
+
 export interface RouteCommandResponse extends SuccessResponseBase {
   snapshot: RouteSnapshot | null;
 }
@@ -200,6 +244,9 @@ export type ControllerResponse =
   | RemoveRouteResponse
   | SetMainRouteResponse
   | SetRouteOffsetResponse
+  | SetRouteVolumeResponse
+  | SetRouteMutedResponse
+  | SetSoloRouteResponse
   | RouteCommandResponse
   | GetSessionResponse
   | ErrorResponse;

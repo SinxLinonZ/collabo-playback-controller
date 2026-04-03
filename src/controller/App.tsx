@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BG_EVENT,
   CONTROLLER_TO_BG,
@@ -20,6 +20,28 @@ interface ViewState {
   candidates: CandidateTab[];
   session: SessionSnapshot;
 }
+
+type RouteSyncStatus =
+  | 'unknown'
+  | 'synced'
+  | 'minor-drift'
+  | 'soft-correcting'
+  | 'hard-correcting'
+  | 'severe-drift'
+  | 'error';
+
+interface RouteRuntimeState {
+  driftSec: number | null;
+  syncStatus: RouteSyncStatus;
+  lastError: string | null;
+}
+
+const AUTO_SYNC_INTERVAL_MS = 500;
+const AUTO_SYNC_STABLE_DRIFT_SEC = 0.1;
+const AUTO_SYNC_MINOR_DRIFT_SEC = 0.3;
+const AUTO_SYNC_HARD_DRIFT_SEC = 1.0;
+const AUTO_SYNC_HARD_COOLDOWN_MS = 3000;
+const AUTO_SYNC_MAX_RATE_DELTA = 0.02;
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -46,6 +68,9 @@ function isRouteState(value: unknown): value is RouteState {
     typeof value.videoTitle === 'string' &&
     typeof value.url === 'string' &&
     typeof value.offsetSec === 'number' &&
+    typeof value.targetVolumePercent === 'number' &&
+    typeof value.targetMuted === 'boolean' &&
+    typeof value.appliedMuted === 'boolean' &&
     typeof value.status === 'string' &&
     typeof value.currentTimeSec === 'number' &&
     (typeof value.durationSec === 'number' || value.durationSec === null) &&
@@ -83,6 +108,10 @@ function isControllerResponse(value: unknown): value is ControllerResponse {
 function normalizeOffsetSeconds(value: number): number {
   const rounded = Math.round(value * 1000) / 1000;
   return Object.is(rounded, -0) ? 0 : rounded;
+}
+
+function normalizeVolumePercent(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
 }
 
 function formatTime(seconds: number): string {
@@ -155,6 +184,35 @@ function parseOffsetInputToSeconds(rawInput: string): number | null {
   return normalizeOffsetSeconds(sign * absoluteSeconds);
 }
 
+function parseVolumeInputToPercent(rawInput: string): number | null {
+  const trimmed = rawInput.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+
+  return normalizeVolumePercent(parsed);
+}
+
+function computeSoftCorrectionPlaybackRate(driftSec: number): number {
+  const delta = Math.max(-AUTO_SYNC_MAX_RATE_DELTA, Math.min(AUTO_SYNC_MAX_RATE_DELTA, driftSec * 0.02));
+  const nextRate = 1 + delta;
+  return Math.max(0.25, Math.min(2, Number(nextRate.toFixed(3))));
+}
+
+function formatDrift(driftSec: number | null): string {
+  if (driftSec === null || !Number.isFinite(driftSec)) {
+    return '--';
+  }
+
+  const sign = driftSec > 0 ? '+' : '';
+  return `${sign}${driftSec.toFixed(3)}s`;
+}
+
 function resolveReferenceRoute(session: SessionSnapshot): RouteState | null {
   const { routes, mainRouteId } = session;
   if (routes.length === 0) {
@@ -207,6 +265,13 @@ export default function App() {
   const [seekAllInput, setSeekAllInput] = useState('');
   const [routeOffsetDrafts, setRouteOffsetDrafts] = useState<Record<string, string>>({});
   const [editingRouteOffsets, setEditingRouteOffsets] = useState<Record<string, boolean>>({});
+  const [routeVolumeDrafts, setRouteVolumeDrafts] = useState<Record<string, string>>({});
+  const [editingRouteVolumes, setEditingRouteVolumes] = useState<Record<string, boolean>>({});
+  const [autoSyncCorrectionEnabled, setAutoSyncCorrectionEnabled] = useState(false);
+  const [routeRuntimeById, setRouteRuntimeById] = useState<Record<string, RouteRuntimeState>>({});
+  const autoSyncTickRunningRef = useRef(false);
+  const lastHardCorrectionAtMsRef = useRef<Record<string, number>>({});
+  const lastPlaybackRateByRouteIdRef = useRef<Record<string, number>>({});
 
   const setStatus = useCallback((text: string): void => {
     setStatusText(text);
@@ -401,6 +466,101 @@ export default function App() {
     [applySessionSnapshot, setStatus],
   );
 
+  const handleSetRouteVolume = useCallback(
+    async (routeId: string, volumePercent: number): Promise<void> => {
+      try {
+        const normalizedVolumePercent = normalizeVolumePercent(volumePercent);
+        setStatus(`Updating volume for ${routeId} to ${normalizedVolumePercent}%...`);
+
+        const response = await sendToBackground({
+          type: CONTROLLER_TO_BG.SET_ROUTE_VOLUME,
+          payload: {
+            routeId,
+            volumePercent: normalizedVolumePercent,
+          },
+        });
+
+        if (isErrorResponse(response)) {
+          throw new Error(response.error);
+        }
+
+        if (!('session' in response) || !isSessionSnapshot(response.session)) {
+          throw new Error('Unexpected set-route-volume response shape.');
+        }
+
+        setRouteVolumeDrafts((prev) => ({
+          ...prev,
+          [routeId]: String(normalizedVolumePercent),
+        }));
+
+        applySessionSnapshot(response.session);
+        setStatus(`Volume updated for ${routeId}: ${normalizedVolumePercent}%.`);
+      } catch (error) {
+        setStatus(toErrorMessage(error, 'Set route volume failed.'));
+      }
+    },
+    [applySessionSnapshot, setStatus],
+  );
+
+  const handleSetRouteMuted = useCallback(
+    async (routeId: string, isMuted: boolean): Promise<void> => {
+      try {
+        setStatus(`${isMuted ? 'Muting' : 'Unmuting'} route ${routeId}...`);
+
+        const response = await sendToBackground({
+          type: CONTROLLER_TO_BG.SET_ROUTE_MUTED,
+          payload: {
+            routeId,
+            isMuted,
+          },
+        });
+
+        if (isErrorResponse(response)) {
+          throw new Error(response.error);
+        }
+
+        if (!('session' in response) || !isSessionSnapshot(response.session)) {
+          throw new Error('Unexpected set-route-muted response shape.');
+        }
+
+        applySessionSnapshot(response.session);
+        setStatus(`Route ${routeId} ${isMuted ? 'muted' : 'unmuted'} (base setting).`);
+      } catch (error) {
+        setStatus(toErrorMessage(error, 'Set route muted failed.'));
+      }
+    },
+    [applySessionSnapshot, setStatus],
+  );
+
+  const handleSetSoloRoute = useCallback(
+    async (routeId: string | null): Promise<void> => {
+      try {
+        setStatus(routeId ? `Setting solo route: ${routeId}...` : 'Clearing solo route...');
+
+        const response = await sendToBackground({
+          type: CONTROLLER_TO_BG.SET_SOLO_ROUTE,
+          payload: {
+            routeId,
+          },
+        });
+
+        if (isErrorResponse(response)) {
+          throw new Error(response.error);
+        }
+
+        if (!('session' in response) || !isSessionSnapshot(response.session)) {
+          throw new Error('Unexpected set-solo-route response shape.');
+        }
+
+        applySessionSnapshot(response.session);
+        setStatus(routeId ? `Solo route set: ${routeId}.` : 'Solo route cleared.');
+      } catch (error) {
+        setStatus(toErrorMessage(error, 'Set solo route failed.'));
+      }
+    },
+    [applySessionSnapshot, setStatus],
+  );
+
   const seekAllToTarget = useCallback(
     async (baseTimeSec: number, actionLabel: string): Promise<void> => {
       const routes = viewState.session.routes;
@@ -587,6 +747,189 @@ export default function App() {
     );
   }, [handleRouteCommand, refreshSession, setStatus, viewState.session]);
 
+  const runAutoSyncCorrectionTick = useCallback(async (): Promise<void> => {
+    if (autoSyncTickRunningRef.current || !autoSyncCorrectionEnabled) {
+      return;
+    }
+
+    const referenceRoute = resolveReferenceRoute(viewState.session);
+
+    if (!referenceRoute) {
+      return;
+    }
+
+    autoSyncTickRunningRef.current = true;
+
+    try {
+      const routes = viewState.session.routes;
+
+      const routeSnapshots = await Promise.allSettled(
+        routes.map(async (route) => {
+          const snapshot = await handleRouteCommand(route.routeId, ROUTE_COMMAND.GET_STATUS);
+          return {
+            routeId: route.routeId,
+            snapshot,
+          };
+        }),
+      );
+
+      const snapshotByRouteId = new Map<string, RouteSnapshot>();
+      const runtimeNext: Record<string, RouteRuntimeState> = {};
+
+      routeSnapshots.forEach((result, index) => {
+        const route = routes[index];
+
+        if (result.status === 'fulfilled' && result.value.snapshot !== null) {
+          snapshotByRouteId.set(route.routeId, result.value.snapshot);
+          return;
+        }
+
+        runtimeNext[route.routeId] = {
+          driftSec: null,
+          syncStatus: 'error',
+          lastError:
+            result.status === 'rejected'
+              ? toErrorMessage(result.reason, 'Status pull failed.')
+              : 'Status snapshot unavailable.',
+        };
+      });
+
+      const referenceCurrentTimeSec =
+        snapshotByRouteId.get(referenceRoute.routeId)?.currentTimeSec ?? referenceRoute.currentTimeSec;
+
+      if (!Number.isFinite(referenceCurrentTimeSec)) {
+        return;
+      }
+
+      const masterTimeSec = referenceCurrentTimeSec - referenceRoute.offsetSec;
+      const nowMs = Date.now();
+
+      for (const route of routes) {
+        const snapshot = snapshotByRouteId.get(route.routeId);
+
+        if (!snapshot || !Number.isFinite(snapshot.currentTimeSec)) {
+          continue;
+        }
+
+        const targetTimeSec = masterTimeSec + route.offsetSec;
+        const driftSec = targetTimeSec - snapshot.currentTimeSec;
+        const absDriftSec = Math.abs(driftSec);
+        const isReferenceRoute = route.routeId === referenceRoute.routeId;
+
+        if (isReferenceRoute) {
+          runtimeNext[route.routeId] = {
+            driftSec,
+            syncStatus: absDriftSec < AUTO_SYNC_STABLE_DRIFT_SEC ? 'synced' : 'minor-drift',
+            lastError: null,
+          };
+          continue;
+        }
+
+        const syncState: RouteRuntimeState = {
+          driftSec,
+          syncStatus: 'synced',
+          lastError: null,
+        };
+
+        if (absDriftSec < AUTO_SYNC_STABLE_DRIFT_SEC) {
+          const previousRate = lastPlaybackRateByRouteIdRef.current[route.routeId] ?? 1;
+
+          if (Math.abs(previousRate - 1) >= 0.005) {
+            try {
+              await handleRouteCommand(route.routeId, ROUTE_COMMAND.SET_PLAYBACK_RATE, {
+                playbackRate: 1,
+              });
+              lastPlaybackRateByRouteIdRef.current[route.routeId] = 1;
+            } catch (error) {
+              syncState.syncStatus = 'error';
+              syncState.lastError = toErrorMessage(error, 'Failed to reset playbackRate.');
+            }
+          }
+
+          runtimeNext[route.routeId] = syncState;
+          continue;
+        }
+
+        if (absDriftSec < AUTO_SYNC_MINOR_DRIFT_SEC) {
+          syncState.syncStatus = 'minor-drift';
+          runtimeNext[route.routeId] = syncState;
+          continue;
+        }
+
+        if (absDriftSec >= AUTO_SYNC_HARD_DRIFT_SEC) {
+          const lastHardCorrectionAtMs = lastHardCorrectionAtMsRef.current[route.routeId] ?? 0;
+          const isHardCorrectionAllowed = nowMs - lastHardCorrectionAtMs >= AUTO_SYNC_HARD_COOLDOWN_MS;
+
+          if (isHardCorrectionAllowed) {
+            try {
+              await handleRouteCommand(route.routeId, ROUTE_COMMAND.SEEK, {
+                timeSec: Math.max(0, targetTimeSec),
+              });
+              lastHardCorrectionAtMsRef.current[route.routeId] = nowMs;
+              syncState.syncStatus = 'hard-correcting';
+            } catch (error) {
+              syncState.syncStatus = 'error';
+              syncState.lastError = toErrorMessage(error, 'Hard correction failed.');
+            }
+
+            runtimeNext[route.routeId] = syncState;
+            continue;
+          }
+
+          syncState.syncStatus = 'severe-drift';
+        } else {
+          syncState.syncStatus = 'soft-correcting';
+        }
+
+        const targetRate = computeSoftCorrectionPlaybackRate(driftSec);
+
+        try {
+          await handleRouteCommand(route.routeId, ROUTE_COMMAND.SET_PLAYBACK_RATE, {
+            playbackRate: targetRate,
+          });
+          lastPlaybackRateByRouteIdRef.current[route.routeId] = targetRate;
+        } catch (error) {
+          syncState.syncStatus = 'error';
+          syncState.lastError = toErrorMessage(error, 'Soft correction failed.');
+        }
+
+        runtimeNext[route.routeId] = syncState;
+      }
+
+      setRouteRuntimeById((prev) => ({
+        ...prev,
+        ...runtimeNext,
+      }));
+    } finally {
+      autoSyncTickRunningRef.current = false;
+    }
+  }, [autoSyncCorrectionEnabled, handleRouteCommand, viewState.session]);
+
+  const toggleAutoSyncCorrection = useCallback((): void => {
+    const nextEnabled = !autoSyncCorrectionEnabled;
+    setAutoSyncCorrectionEnabled(nextEnabled);
+
+    if (nextEnabled) {
+      setStatus('Auto Sync Correction started.');
+      return;
+    }
+
+    setStatus('Auto Sync Correction stopped.');
+    autoSyncTickRunningRef.current = false;
+    lastHardCorrectionAtMsRef.current = {};
+    lastPlaybackRateByRouteIdRef.current = {};
+
+    void Promise.allSettled(
+      viewState.session.routes.map((route) =>
+        handleRouteCommand(route.routeId, ROUTE_COMMAND.SET_PLAYBACK_RATE, { playbackRate: 1 }),
+      ),
+    ).then(() => {
+      void refreshSession().catch(() => {
+        // Ignore refresh failure when stopping correction.
+      });
+    });
+  }, [autoSyncCorrectionEnabled, handleRouteCommand, refreshSession, setStatus, viewState.session.routes]);
+
   useEffect(() => {
     setRouteOffsetDrafts((prev) => {
       const next: Record<string, string> = {};
@@ -600,6 +943,66 @@ export default function App() {
       return next;
     });
   }, [editingRouteOffsets, viewState.session.routes]);
+
+  useEffect(() => {
+    setRouteVolumeDrafts((prev) => {
+      const next: Record<string, string> = {};
+
+      viewState.session.routes.forEach((route) => {
+        const key = route.routeId;
+        const routeCanonical = String(normalizeVolumePercent(route.targetVolumePercent));
+        next[key] = editingRouteVolumes[key] ? (prev[key] ?? routeCanonical) : routeCanonical;
+      });
+
+      return next;
+    });
+  }, [editingRouteVolumes, viewState.session.routes]);
+
+  useEffect(() => {
+    setRouteRuntimeById((prev) => {
+      const next: Record<string, RouteRuntimeState> = {};
+
+      viewState.session.routes.forEach((route) => {
+        next[route.routeId] =
+          prev[route.routeId] ??
+          ({
+            driftSec: null,
+            syncStatus: 'unknown',
+            lastError: null,
+          } satisfies RouteRuntimeState);
+      });
+
+      return next;
+    });
+
+    const activeRouteIds = new Set(viewState.session.routes.map((route) => route.routeId));
+    Object.keys(lastHardCorrectionAtMsRef.current).forEach((routeId) => {
+      if (!activeRouteIds.has(routeId)) {
+        delete lastHardCorrectionAtMsRef.current[routeId];
+      }
+    });
+    Object.keys(lastPlaybackRateByRouteIdRef.current).forEach((routeId) => {
+      if (!activeRouteIds.has(routeId)) {
+        delete lastPlaybackRateByRouteIdRef.current[routeId];
+      }
+    });
+  }, [viewState.session.routes]);
+
+  useEffect(() => {
+    if (!autoSyncCorrectionEnabled) {
+      return;
+    }
+
+    void runAutoSyncCorrectionTick();
+
+    const timer = window.setInterval(() => {
+      void runAutoSyncCorrectionTick();
+    }, AUTO_SYNC_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [autoSyncCorrectionEnabled, runAutoSyncCorrectionTick]);
 
   useEffect(() => {
     const runtimeListener = (message: unknown): void => {
@@ -802,6 +1205,14 @@ export default function App() {
           >
             Read Offsets
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              toggleAutoSyncCorrection();
+            }}
+          >
+            {autoSyncCorrectionEnabled ? 'Stop Auto Sync Correction' : 'Start Auto Sync Correction'}
+          </button>
         </div>
 
         <ul className="list">
@@ -810,8 +1221,15 @@ export default function App() {
           ) : (
             viewState.session.routes.map((route) => {
               const isMainRoute = route.routeId === viewState.session.mainRouteId;
+              const isSoloRoute = route.routeId === viewState.session.soloRouteId;
+              const isForcedMutedBySolo =
+                typeof viewState.session.soloRouteId === 'string' &&
+                viewState.session.soloRouteId !== route.routeId;
               const routeOffsetValue =
                 routeOffsetDrafts[route.routeId] ?? normalizeOffsetSeconds(route.offsetSec).toFixed(2);
+              const routeVolumeValue =
+                routeVolumeDrafts[route.routeId] ?? String(normalizeVolumePercent(route.targetVolumePercent));
+              const runtimeState = routeRuntimeById[route.routeId];
 
               return (
                 <li key={route.routeId} className={`card${isMainRoute ? ' main-route' : ''}`}>
@@ -819,6 +1237,7 @@ export default function App() {
                     <p className="title">
                       {route.videoTitle || route.tabTitle || '(Unknown title)'}
                       {isMainRoute ? <span className="main-badge">MAIN</span> : null}
+                      {isSoloRoute ? <span className="solo-badge">SOLO</span> : null}
                     </p>
                     <button
                       type="button"
@@ -838,8 +1257,17 @@ export default function App() {
                       `status:${route.status}`,
                       `time:${formatTime(route.currentTimeSec)}`,
                       `offset:${normalizeOffsetSeconds(route.offsetSec).toFixed(2)}s`,
+                      `vol:${normalizeVolumePercent(route.targetVolumePercent)}%`,
+                      `baseMute:${route.targetMuted ? 'on' : 'off'}`,
+                      `appliedMute:${route.appliedMuted ? 'on' : 'off'}`,
+                      `drift:${formatDrift(runtimeState?.driftSec ?? null)}`,
+                      `sync:${runtimeState?.syncStatus ?? 'unknown'}`,
                     ].join(' | ')}
                   </p>
+
+                  {runtimeState?.lastError ? (
+                    <p className="meta error-meta">{`sync-error:${runtimeState.lastError}`}</p>
+                  ) : null}
 
                   <div className="offset-controls">
                     <input
@@ -863,15 +1291,9 @@ export default function App() {
                         }));
                       }}
                       onBlur={() => {
-                        const canonical = normalizeOffsetSeconds(route.offsetSec).toFixed(2);
-
                         setEditingRouteOffsets((prev) => ({
                           ...prev,
                           [route.routeId]: false,
-                        }));
-                        setRouteOffsetDrafts((prev) => ({
-                          ...prev,
-                          [route.routeId]: canonical,
                         }));
                       }}
                       onKeyDown={(event) => {
@@ -890,6 +1312,10 @@ export default function App() {
                     />
                     <button
                       type="button"
+                      onMouseDown={(event) => {
+                        // Keep the input focused until click, so blur side effects do not race submission.
+                        event.preventDefault();
+                      }}
                       onClick={() => {
                         const parsedOffset = parseOffsetInputToSeconds(routeOffsetValue);
                         if (parsedOffset === null) {
@@ -932,6 +1358,94 @@ export default function App() {
                         Offset 0
                       </button>
                     </div>
+                  </div>
+
+                  <div className="audio-controls">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void handleSetRouteMuted(route.routeId, !route.targetMuted);
+                      }}
+                    >
+                      {route.targetMuted ? 'Base Unmute' : 'Base Mute'}
+                    </button>
+
+                    <input
+                      type="number"
+                      className="volume-input"
+                      min={0}
+                      max={100}
+                      step={1}
+                      inputMode="numeric"
+                      value={routeVolumeValue}
+                      onChange={(event) => {
+                        const nextValue = event.target.value;
+                        setRouteVolumeDrafts((prev) => ({
+                          ...prev,
+                          [route.routeId]: nextValue,
+                        }));
+                      }}
+                      onFocus={() => {
+                        setEditingRouteVolumes((prev) => ({
+                          ...prev,
+                          [route.routeId]: true,
+                        }));
+                      }}
+                      onBlur={() => {
+                        setEditingRouteVolumes((prev) => ({
+                          ...prev,
+                          [route.routeId]: false,
+                        }));
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+
+                          const parsedVolumePercent = parseVolumeInputToPercent(routeVolumeValue);
+                          if (parsedVolumePercent === null) {
+                            setStatus('Volume invalid. Use a number between 0 and 100.');
+                            return;
+                          }
+
+                          void handleSetRouteVolume(route.routeId, parsedVolumePercent);
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onMouseDown={(event) => {
+                        // Keep the input focused until click, so blur side effects do not race submission.
+                        event.preventDefault();
+                      }}
+                      onClick={() => {
+                        const parsedVolumePercent = parseVolumeInputToPercent(routeVolumeValue);
+                        if (parsedVolumePercent === null) {
+                          setStatus('Volume invalid. Use a number between 0 and 100.');
+                          return;
+                        }
+
+                        void handleSetRouteVolume(route.routeId, parsedVolumePercent);
+                      }}
+                    >
+                      Apply Vol
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void handleSetSoloRoute(isSoloRoute ? null : route.routeId);
+                      }}
+                    >
+                      {isSoloRoute ? 'Unsolo' : 'Solo'}
+                    </button>
+
+                    <span className="audio-meta">
+                      {isForcedMutedBySolo
+                        ? 'Muted by solo'
+                        : route.appliedMuted
+                          ? 'Muted'
+                          : 'Audible'}
+                    </span>
                   </div>
 
                   <div className="card-actions">

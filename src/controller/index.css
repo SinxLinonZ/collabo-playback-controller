@@ -143,6 +143,18 @@ input {
   border: 1px solid #86efac;
 }
 
+.solo-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #92400e;
+  background: #fef3c7;
+  border: 1px solid #fcd34d;
+}
+
 .meta {
   margin: 0;
   color: var(--muted);
@@ -170,6 +182,27 @@ input {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.audio-controls {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.volume-input {
+  min-width: 0;
+  width: 84px;
+}
+
+.audio-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.error-meta {
+  color: #b45309;
 }
 
 .status-bar {

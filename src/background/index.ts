@@ -192,6 +192,70 @@ function parseControllerMessage(value: unknown): ControllerToBackgroundMessage |
       };
     }
 
+    case CONTROLLER_TO_BG.SET_ROUTE_VOLUME: {
+      if (!isObjectRecord(value.payload)) {
+        return null;
+      }
+
+      const { routeId, volumePercent } = value.payload;
+
+      if (
+        typeof routeId !== 'string' ||
+        !routeId ||
+        typeof volumePercent !== 'number' ||
+        !Number.isFinite(volumePercent)
+      ) {
+        return null;
+      }
+
+      return {
+        type: CONTROLLER_TO_BG.SET_ROUTE_VOLUME,
+        payload: {
+          routeId,
+          volumePercent,
+        },
+      };
+    }
+
+    case CONTROLLER_TO_BG.SET_ROUTE_MUTED: {
+      if (!isObjectRecord(value.payload)) {
+        return null;
+      }
+
+      const { routeId, isMuted } = value.payload;
+
+      if (typeof routeId !== 'string' || !routeId || typeof isMuted !== 'boolean') {
+        return null;
+      }
+
+      return {
+        type: CONTROLLER_TO_BG.SET_ROUTE_MUTED,
+        payload: {
+          routeId,
+          isMuted,
+        },
+      };
+    }
+
+    case CONTROLLER_TO_BG.SET_SOLO_ROUTE: {
+      if (!isObjectRecord(value.payload)) {
+        return null;
+      }
+
+      const { routeId } = value.payload;
+
+      if (routeId !== null && (typeof routeId !== 'string' || !routeId)) {
+        return null;
+      }
+
+      return {
+        type: CONTROLLER_TO_BG.SET_SOLO_ROUTE,
+        payload: {
+          routeId,
+        },
+      };
+    }
+
     case CONTROLLER_TO_BG.ROUTE_COMMAND: {
       if (!isObjectRecord(value.payload)) {
         return null;
@@ -395,6 +459,20 @@ function normalizeOffsetSeconds(value: number): number {
   return Object.is(rounded, -0) ? 0 : rounded;
 }
 
+function normalizeVolumePercent(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function resolveAppliedMuted(routeId: string, targetMuted: boolean): boolean {
+  const soloRouteId = sessionState.soloRouteId;
+
+  if (typeof soloRouteId === 'string' && soloRouteId && soloRouteId !== routeId) {
+    return true;
+  }
+
+  return targetMuted;
+}
+
 function emitRuntimeMessage(message: BackgroundEventMessage): void {
   chrome.runtime.sendMessage(message, () => {
     void chrome.runtime.lastError;
@@ -423,6 +501,25 @@ function ensureSessionRouteRefs(): void {
   if (!sessionState.mainRouteId) {
     sessionState.mainRouteId = Array.from(routesById.keys())[0] ?? null;
   }
+}
+
+async function applyEffectiveMutedState(route: RouteState): Promise<ControllerResponse | null> {
+  const previousAppliedMuted = route.appliedMuted;
+  const nextAppliedMuted = resolveAppliedMuted(route.routeId, route.targetMuted);
+
+  route.appliedMuted = nextAppliedMuted;
+
+  const response = await executeRouteCommand(route.routeId, ROUTE_COMMAND.SET_MUTED, {
+    isMuted: nextAppliedMuted,
+  });
+
+  if (!response.ok) {
+    route.appliedMuted = previousAppliedMuted;
+    route.updatedAtMs = Date.now();
+    return response;
+  }
+
+  return null;
 }
 
 async function listYouTubeTabs(scope: TabScanScope): Promise<CandidateTab[]> {
@@ -514,6 +611,8 @@ function findRouteByTabId(tabId: number): RouteState | null {
 }
 
 function updateRouteSnapshot(route: RouteState, snapshot: RouteSnapshot): void {
+  const hadSnapshot = route.lastSnapshot !== null;
+
   route.lastSnapshot = {
     ...snapshot,
     observedAtMs: Date.now(),
@@ -524,6 +623,12 @@ function updateRouteSnapshot(route: RouteState, snapshot: RouteSnapshot): void {
   route.durationSec = Number.isFinite(snapshot.durationSec) ? snapshot.durationSec : route.durationSec;
   route.videoTitle = snapshot.title || route.videoTitle;
   route.lastError = null;
+
+  if (!hadSnapshot) {
+    route.targetVolumePercent = normalizeVolumePercent(snapshot.volumePercent);
+    route.targetMuted = Boolean(snapshot.isMuted);
+    route.appliedMuted = route.targetMuted;
+  }
 }
 
 async function importTab(tabId: number): Promise<ControllerResponse> {
@@ -557,6 +662,9 @@ async function importTab(tabId: number): Promise<ControllerResponse> {
     videoTitle: tab.title ?? '',
     url: tab.url ?? '',
     offsetSec: 0,
+    targetVolumePercent: 100,
+    targetMuted: false,
+    appliedMuted: false,
     status: 'loading',
     currentTimeSec: 0,
     durationSec: null,
@@ -636,6 +744,99 @@ function setRouteOffset(routeId: string, offsetSec: number): ControllerResponse 
   route.updatedAtMs = Date.now();
 
   emitSessionUpdated('route-offset-updated');
+
+  return {
+    ok: true,
+    session: buildSessionSnapshot(),
+  };
+}
+
+async function setRouteVolume(routeId: string, volumePercent: number): Promise<ControllerResponse> {
+  const route = routesById.get(routeId);
+
+  if (!route) {
+    return asErrorResponse('Route not found.');
+  }
+
+  const normalizedVolumePercent = normalizeVolumePercent(volumePercent);
+  const previousVolumePercent = route.targetVolumePercent;
+
+  route.targetVolumePercent = normalizedVolumePercent;
+  route.updatedAtMs = Date.now();
+
+  const commandResponse = await executeRouteCommand(routeId, ROUTE_COMMAND.SET_VOLUME, {
+    volumePercent: normalizedVolumePercent,
+  });
+
+  if (!commandResponse.ok) {
+    route.targetVolumePercent = previousVolumePercent;
+    route.updatedAtMs = Date.now();
+    emitSessionUpdated('route-volume-update-failed');
+    return commandResponse;
+  }
+
+  emitSessionUpdated('route-volume-updated');
+
+  return {
+    ok: true,
+    session: buildSessionSnapshot(),
+  };
+}
+
+async function setRouteMuted(routeId: string, isMuted: boolean): Promise<ControllerResponse> {
+  const route = routesById.get(routeId);
+
+  if (!route) {
+    return asErrorResponse('Route not found.');
+  }
+
+  const previousTargetMuted = route.targetMuted;
+  const previousAppliedMuted = route.appliedMuted;
+
+  route.targetMuted = isMuted;
+  route.appliedMuted = resolveAppliedMuted(route.routeId, route.targetMuted);
+  route.updatedAtMs = Date.now();
+
+  const commandResponse = await executeRouteCommand(routeId, ROUTE_COMMAND.SET_MUTED, {
+    isMuted: route.appliedMuted,
+  });
+
+  if (!commandResponse.ok) {
+    route.targetMuted = previousTargetMuted;
+    route.appliedMuted = previousAppliedMuted;
+    route.updatedAtMs = Date.now();
+    emitSessionUpdated('route-muted-update-failed');
+    return commandResponse;
+  }
+
+  emitSessionUpdated('route-muted-updated');
+
+  return {
+    ok: true,
+    session: buildSessionSnapshot(),
+  };
+}
+
+async function setSoloRoute(routeId: string | null): Promise<ControllerResponse> {
+  if (routeId !== null && !routesById.has(routeId)) {
+    return asErrorResponse('Route not found.');
+  }
+
+  sessionState.soloRouteId = routeId;
+
+  const results = await Promise.allSettled(
+    Array.from(routesById.values()).map((route) => applyEffectiveMutedState(route)),
+  );
+
+  const hasAnyTransportError = results.some(
+    (result) => result.status === 'fulfilled' && result.value !== null && !result.value.ok,
+  );
+
+  if (hasAnyTransportError) {
+    emitSessionUpdated('solo-route-updated-with-errors');
+  } else {
+    emitSessionUpdated('solo-route-updated');
+  }
 
   return {
     ok: true,
@@ -741,6 +942,15 @@ async function handleControllerMessage(message: ControllerToBackgroundMessage): 
 
     case CONTROLLER_TO_BG.SET_ROUTE_OFFSET:
       return setRouteOffset(message.payload.routeId, message.payload.offsetSec);
+
+    case CONTROLLER_TO_BG.SET_ROUTE_VOLUME:
+      return setRouteVolume(message.payload.routeId, message.payload.volumePercent);
+
+    case CONTROLLER_TO_BG.SET_ROUTE_MUTED:
+      return setRouteMuted(message.payload.routeId, message.payload.isMuted);
+
+    case CONTROLLER_TO_BG.SET_SOLO_ROUTE:
+      return setSoloRoute(message.payload.routeId);
 
     case CONTROLLER_TO_BG.ROUTE_COMMAND:
       return executeRouteCommand(message.payload.routeId, message.payload.command, message.payload.args ?? {});
