@@ -155,6 +155,7 @@ C. Content Script（每个受控 YouTube tab）
 - Pause All
 - Seek All（输入全局 T）
 - Sync Now（立即按目标时间重对齐）
+- Read Offsets（从已导入 tabs 当前播放时间反向计算并回写 offset）
 
 行为：
 
@@ -168,6 +169,7 @@ C. Content Script（每个受控 YouTube tab）
 - 正/负 offset（小数秒）
 - 修改后立即影响目标时间计算
 - 支持极端值输入，执行时做边界裁切
+- 支持通过 `Read Offsets` 以“当前实际对齐状态”为基准批量回写 offset
 
 6.4 音频控制
 
@@ -176,6 +178,7 @@ C. Content Script（每个受控 YouTube tab）
 - mute（不覆盖 volume 值）
 - volume（0~100）
 - solo（MVP 单选）
+- volume 调整采用 slider，拖动时 UI 实时反映，并以 debounce 下发控制命令
 
 solo 规则：
 
@@ -214,6 +217,20 @@ solo 规则：
 
 - 避免高频震荡
 - 对 hard seek 设置 cooldown
+
+6.7 Auto Focus（可选开关）
+
+系统应支持：
+
+- Controller 中提供 `Auto Focus` 开关（默认关闭）
+- 开启后，点击 imported route card 的非交互区域，视为该路被 focus
+- focus 后卡片显示明显 border glow
+- 同时激活对应 tab，并将其所在 browser window 置前
+
+触发约束：
+
+- 点击 `button/input/select/textarea/a/label/contenteditable` 区域不触发 auto focus
+- 关闭 `Auto Focus` 时不触发卡片跳转行为
 
 
 7. 可选模式需求（Embed Grid）
@@ -271,6 +288,7 @@ solo 规则：
 
 - 默认可控制多窗口 tabs
 - 窗口位置与排版由用户自行管理
+- `Auto Focus` 允许跨窗口激活目标 tab 并切换到对应 window
 
 
 10. 版本规划
@@ -320,8 +338,10 @@ solo 规则：
 - 能从浏览器导入多个 YouTube tabs
 - 多路可统一 play/pause/seek/sync
 - 每路 offset 生效且可观察到同步结果
+- `Read Offsets` 可从 tabs 当前状态反向回写 offset
 - mute/volume/solo 语义正确
 - 小误差软纠偏、大误差硬拉回可工作
+- 开启 `Auto Focus` 后可通过卡片点击快速切换到目标 tab/window
 - 单路异常不影响其他路
 
 
@@ -334,3 +354,5 @@ solo 规则：
 - Embed Grid Mode：扩展页内 iframe 网格的可选模式
 - Sync Now：手动触发的一次性立即重对齐
 - Auto Sync Correction：后台周期运行的持续纠偏机制
+- Read Offsets：从已导入 routes 的当前时间反向计算 offset 并批量回写
+- Auto Focus：点击 route card 时自动聚焦对应 tab/window 的快速切换机制

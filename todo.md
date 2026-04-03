@@ -25,7 +25,7 @@ Done when:
 
 ## 2. 核心数据模型与消息协议（M1）
 - [x] 定义核心实体：`Route`、`Session`
-- [ ] 补充实体：`MasterClock`、`RouteRuntime`（供后续 `Auto Sync Correction` 使用）
+- [x] 补充实体：`MasterClock`、`RouteRuntime`（供后续 `Auto Sync Correction` 使用）
 - [x] 定义消息协议分层：
 - [x] `Controller -> Background`
 - [x] `Background -> Content`
@@ -61,6 +61,7 @@ Done when:
 ## 5. Controller 全局控制（M1）
 - [x] 全局按钮：`Play All`、`Pause All`、`Seek All(T)`、`Sync Now`
 - [x] 新增：`Read Offsets`（从 tabs 反向读取并回写 offset）
+- [x] 新增：`Auto Focus`（可选开启；卡片非交互区点击触发 tab/window 聚焦）
 - [x] 行为规则：`Seek All` 时每路跳到 `T + offset`
 - [x] 单路执行失败不阻塞其他路（`Promise.allSettled`）
 
@@ -70,38 +71,39 @@ Done when:
 ## 6. Offset / Audio / Solo 语义（M1）
 - [x] 每路支持正负 `offset`（小数秒）并即时生效
 - [x] 执行层对极端目标时间做边界裁切（0 ~ duration）
-- [ ] 每路 `mute`、`volume(0~100)` UI 与会话语义（命令已支持，UI/语义未完成）
-- [ ] `solo`（MVP 单选）
-- [ ] 开启某路 solo 时其他路强制静音
-- [ ] 不覆盖其他路原 `mute/volume` 持久状态
-- [ ] 取消 solo 后恢复各路原状态效果
+- [x] 每路 `mute`、`volume(0~100)` UI 与会话语义
+- [x] `volume` 改为 slider，拖动实时反映并以 debounce 下发
+- [x] `solo`（MVP 单选）
+- [x] 开启某路 solo 时其他路强制静音
+- [x] 不覆盖其他路原 `mute/volume` 持久状态
+- [x] 取消 solo 后恢复各路原状态效果
 
 Done when:
 - [x] `offset` 改动与反向读取结果可观察
-- [ ] `solo` 开关前后的音频状态恢复正确
+- [x] `solo` 开关前后的音频状态恢复正确
 
 ## 7. 同步纠偏引擎（Auto Sync Correction, M1 核心）
-- [ ] 实现 `virtual master clock`
-- [ ] 目标时间模型：`targetTime = masterTime + offset`
-- [ ] 漂移检测（建议 500ms）：`drift = targetTime - currentTime`
-- [ ] 纠偏策略分层：
-- [ ] 稳定区间：`|drift| < 100ms` 不处理
-- [ ] 中误差：`soft correction`（`playbackRate` 约 0.98~1.02）
-- [ ] 大误差：`hard correction`（`seek`，阈值约 1.0s）
-- [ ] `hard correction cooldown` + 防震荡策略
+- [x] 实现 `virtual master clock`
+- [x] 目标时间模型：`targetTime = masterTime + offset`
+- [x] 漂移检测（建议 500ms）：`drift = targetTime - currentTime`
+- [x] 纠偏策略分层：
+- [x] 稳定区间：`|drift| < 100ms` 不处理
+- [x] 中误差：`soft correction`（`playbackRate` 约 0.98~1.02）
+- [x] 大误差：`hard correction`（`seek`，阈值约 1.0s）
+- [x] `hard correction cooldown` + 防震荡策略
 
 Done when:
-- [ ] 长时间播放下，漂移可被持续拉回
-- [ ] 不出现高频 seek 抖动
+- [x] 长时间播放下，漂移可被持续拉回
+- [x] 不出现高频 seek 抖动
 
 ## 8. 状态可视化与可观测性（M1）
 - [x] 每路展示：`status`、`currentTime`、`offset`
-- [ ] 每路展示：`drift`
-- [ ] 每路展示：`sync status`（`synced/minor-drift/soft-correcting/hard-correcting/severe-drift`）
-- [ ] 展示基础诊断信息（最近一次控制失败原因）
+- [x] 每路展示：`drift`
+- [x] 每路展示：`sync status`（`synced/minor-drift/soft-correcting/hard-correcting/severe-drift`）
+- [x] 展示基础诊断信息（最近一次控制失败原因）
 
 Done when:
-- [ ] 用户可直接从 UI 判断每路当前是否可控、是否同步
+- [x] 用户可直接从 UI 判断每路当前是否可控、是否同步
 
 ## 9. 生命周期与异常处理（M1）
 - [ ] 监听 tab `create/update/remove/activate`（当前已覆盖 `update/remove`）
@@ -116,8 +118,8 @@ Done when:
 - [x] 能导入多个 YouTube tabs
 - [x] 多路可统一 play/pause/seek/sync
 - [x] 每路 offset 生效且同步结果可观察
-- [ ] `mute/volume/solo` 语义正确
-- [ ] `Auto Sync Correction`（软纠偏 + 硬拉回）可工作
+- [x] `mute/volume/solo` 语义正确
+- [x] `Auto Sync Correction`（软纠偏 + 硬拉回）可工作
 - [x] 单路异常不影响其他路
 
 ## 11. M2 Backlog（可用性增强）
