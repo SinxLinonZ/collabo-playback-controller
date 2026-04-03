@@ -4,7 +4,7 @@
   "version": "0.2.0",
   "description": "Extension-first YouTube archive multi-tab sync controller.",
   "minimum_chrome_version": "114",
-  "permissions": ["tabs", "scripting", "storage"],
+  "permissions": ["tabs", "scripting", "storage", "windows"],
   "host_permissions": ["https://www.youtube.com/*"],
   "background": {
     "service_worker": "src/background/index.ts",
@@ -17,8 +17,8 @@
       "run_at": "document_idle"
     }
   ],
+  "options_page": "src/controller/index.html",
   "action": {
-    "default_title": "Archive Sync Controller",
-    "default_popup": "src/controller/index.html"
+    "default_title": "Archive Sync Controller"
   }
 }

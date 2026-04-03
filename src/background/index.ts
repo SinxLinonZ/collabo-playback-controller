@@ -24,9 +24,15 @@ import {
 
 const ROUTE_COMMAND_VALUES = Object.values(ROUTE_COMMAND) as RouteCommand[];
 const TAB_SCAN_SCOPE_VALUES = Object.values(TAB_SCAN_SCOPE) as TabScanScope[];
+const CONTROLLER_WINDOW_WIDTH = 480;
+const CONTROLLER_WINDOW_HEIGHT = 760;
+const CONTENT_PING_MAX_RETRY = 8;
+const CONTENT_PING_RETRY_INTERVAL_MS = 120;
 
 const routesById = new Map<string, RouteState>();
 const routeIdByTabId = new Map<number, string>();
+let controllerWindowId: number | null = null;
+let sourceWindowId: number | null = null;
 
 const sessionState: Pick<SessionSnapshot, 'mainRouteId' | 'soloRouteId'> = {
   mainRouteId: null,
@@ -153,6 +159,39 @@ function parseControllerMessage(value: unknown): ControllerToBackgroundMessage |
       };
     }
 
+    case CONTROLLER_TO_BG.SET_MAIN_ROUTE: {
+      if (!isObjectRecord(value.payload) || typeof value.payload.routeId !== 'string' || !value.payload.routeId) {
+        return null;
+      }
+
+      return {
+        type: CONTROLLER_TO_BG.SET_MAIN_ROUTE,
+        payload: {
+          routeId: value.payload.routeId,
+        },
+      };
+    }
+
+    case CONTROLLER_TO_BG.SET_ROUTE_OFFSET: {
+      if (!isObjectRecord(value.payload)) {
+        return null;
+      }
+
+      const { routeId, offsetSec } = value.payload;
+
+      if (typeof routeId !== 'string' || !routeId || typeof offsetSec !== 'number' || !Number.isFinite(offsetSec)) {
+        return null;
+      }
+
+      return {
+        type: CONTROLLER_TO_BG.SET_ROUTE_OFFSET,
+        payload: {
+          routeId,
+          offsetSec,
+        },
+      };
+    }
+
     case CONTROLLER_TO_BG.ROUTE_COMMAND: {
       if (!isObjectRecord(value.payload)) {
         return null;
@@ -239,6 +278,103 @@ function mapTabToCandidate(tab: chrome.tabs.Tab): CandidateTab | null {
   };
 }
 
+function getControllerPagePath(): string {
+  const manifest = chrome.runtime.getManifest();
+
+  if (typeof manifest.options_page === 'string' && manifest.options_page) {
+    return manifest.options_page;
+  }
+
+  // Fallback path for local debugging if manifest key is missing.
+  return 'src/controller/index.html';
+}
+
+function getControllerPageUrl(): string {
+  return chrome.runtime.getURL(getControllerPagePath());
+}
+
+function getExtensionBaseUrl(): string {
+  return chrome.runtime.getURL('');
+}
+
+function isExtensionInternalUrl(url: string | undefined): boolean {
+  if (typeof url !== 'string' || !url) {
+    return false;
+  }
+
+  return url.startsWith(getExtensionBaseUrl());
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function isReceivingEndMissingError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return error.message.includes('Receiving end does not exist');
+}
+
+async function resolveControllerWindowId(): Promise<number | null> {
+  if (typeof controllerWindowId === 'number') {
+    try {
+      await chrome.windows.get(controllerWindowId);
+      return controllerWindowId;
+    } catch {
+      controllerWindowId = null;
+    }
+  }
+
+  const controllerPageUrl = getControllerPageUrl();
+  const controllerTabs = await chrome.tabs.query({ url: [controllerPageUrl] });
+  const existing = controllerTabs.find((tab) => typeof tab.id === 'number' && typeof tab.windowId === 'number');
+
+  if (!existing || typeof existing.windowId !== 'number') {
+    return null;
+  }
+
+  controllerWindowId = existing.windowId;
+  return controllerWindowId;
+}
+
+async function openOrFocusControllerWindow(): Promise<void> {
+  const existingWindowId = await resolveControllerWindowId();
+
+  if (typeof existingWindowId === 'number') {
+    await chrome.windows.update(existingWindowId, {
+      focused: true,
+      state: 'normal',
+    });
+
+    const controllerPageUrl = getControllerPageUrl();
+    const controllerTabs = await chrome.tabs.query({
+      windowId: existingWindowId,
+      url: [controllerPageUrl],
+    });
+    const firstControllerTabId = controllerTabs[0]?.id;
+
+    if (typeof firstControllerTabId === 'number') {
+      await chrome.tabs.update(firstControllerTabId, { active: true });
+    }
+
+    return;
+  }
+
+  const createdWindow = await chrome.windows.create({
+    url: getControllerPageUrl(),
+    type: 'popup',
+    focused: true,
+    width: CONTROLLER_WINDOW_WIDTH,
+    height: CONTROLLER_WINDOW_HEIGHT,
+  });
+
+  controllerWindowId = typeof createdWindow.id === 'number' ? createdWindow.id : null;
+}
+
 function cloneRoute(route: RouteState): RouteState {
   return {
     ...route,
@@ -252,6 +388,11 @@ function buildSessionSnapshot(): SessionSnapshot {
     soloRouteId: sessionState.soloRouteId,
     routes: Array.from(routesById.values()).map(cloneRoute),
   };
+}
+
+function normalizeOffsetSeconds(value: number): number {
+  const rounded = Math.round(value * 1000) / 1000;
+  return Object.is(rounded, -0) ? 0 : rounded;
 }
 
 function emitRuntimeMessage(message: BackgroundEventMessage): void {
@@ -290,7 +431,19 @@ async function listYouTubeTabs(scope: TabScanScope): Promise<CandidateTab[]> {
   };
 
   if (scope === TAB_SCAN_SCOPE.CURRENT_WINDOW) {
-    query.currentWindow = true;
+    if (typeof sourceWindowId === 'number') {
+      try {
+        await chrome.windows.get(sourceWindowId);
+        query.windowId = sourceWindowId;
+      } catch {
+        sourceWindowId = null;
+      }
+    }
+
+    // If source window is unknown, fall back to all windows instead of controller window.
+    if (typeof query.windowId !== 'number') {
+      delete query.currentWindow;
+    }
   }
 
   const tabs = await chrome.tabs.query(query);
@@ -306,6 +459,21 @@ function asErrorResponse(error: string): ErrorResponse {
 }
 
 async function ensureContentScriptInjected(tabId: number): Promise<void> {
+  const pingMessage: BackgroundToContentMessage = {
+    type: BG_TO_CONTENT.PING,
+  };
+
+  try {
+    const existing = parseContentCommandResponse(await chrome.tabs.sendMessage(tabId, pingMessage));
+    if (existing && existing.ok) {
+      return;
+    }
+  } catch (error) {
+    if (!isReceivingEndMissingError(error)) {
+      throw error;
+    }
+  }
+
   const contentScriptPath = chrome.runtime.getManifest().content_scripts?.[0]?.js?.[0];
 
   if (typeof contentScriptPath !== 'string' || !contentScriptPath) {
@@ -317,19 +485,23 @@ async function ensureContentScriptInjected(tabId: number): Promise<void> {
     files: [contentScriptPath],
   });
 
-  const pingMessage: BackgroundToContentMessage = {
-    type: BG_TO_CONTENT.PING,
-  };
+  for (let attempt = 0; attempt < CONTENT_PING_MAX_RETRY; attempt += 1) {
+    try {
+      const response = parseContentCommandResponse(await chrome.tabs.sendMessage(tabId, pingMessage));
 
-  const response = parseContentCommandResponse(await chrome.tabs.sendMessage(tabId, pingMessage));
+      if (response && response.ok) {
+        return;
+      }
+    } catch (error) {
+      if (!isReceivingEndMissingError(error)) {
+        throw error;
+      }
+    }
 
-  if (!response) {
-    throw new Error('Invalid ping response from content script.');
+    await sleep(CONTENT_PING_RETRY_INTERVAL_MS);
   }
 
-  if (!response.ok) {
-    throw new Error(response.error);
-  }
+  throw new Error('Content script injection completed but ping timed out.');
 }
 
 function findRouteByTabId(tabId: number): RouteState | null {
@@ -384,6 +556,7 @@ async function importTab(tabId: number): Promise<ControllerResponse> {
     tabTitle: tab.title ?? '',
     videoTitle: tab.title ?? '',
     url: tab.url ?? '',
+    offsetSec: 0,
     status: 'loading',
     currentTimeSec: 0,
     durationSec: null,
@@ -428,6 +601,48 @@ function removeRouteByRouteId(routeId: string, reason = 'route-removed'): boolea
   return true;
 }
 
+function setMainRouteWithEquivalentOffsets(routeId: string): ControllerResponse {
+  const newMainRoute = routesById.get(routeId);
+
+  if (!newMainRoute) {
+    return asErrorResponse('Route not found.');
+  }
+
+  const shiftSec = newMainRoute.offsetSec;
+  const updatedAtMs = Date.now();
+
+  routesById.forEach((route) => {
+    route.offsetSec = normalizeOffsetSeconds(route.offsetSec - shiftSec);
+    route.updatedAtMs = updatedAtMs;
+  });
+
+  sessionState.mainRouteId = routeId;
+  emitSessionUpdated('main-route-changed');
+
+  return {
+    ok: true,
+    session: buildSessionSnapshot(),
+  };
+}
+
+function setRouteOffset(routeId: string, offsetSec: number): ControllerResponse {
+  const route = routesById.get(routeId);
+
+  if (!route) {
+    return asErrorResponse('Route not found.');
+  }
+
+  route.offsetSec = normalizeOffsetSeconds(offsetSec);
+  route.updatedAtMs = Date.now();
+
+  emitSessionUpdated('route-offset-updated');
+
+  return {
+    ok: true,
+    session: buildSessionSnapshot(),
+  };
+}
+
 async function executeRouteCommand(
   routeId: string,
   command: RouteCommand,
@@ -448,7 +663,20 @@ async function executeRouteCommand(
       },
     };
 
-    const response = parseContentCommandResponse(await chrome.tabs.sendMessage(route.tabId, message));
+    let rawResponse: unknown;
+
+    try {
+      rawResponse = await chrome.tabs.sendMessage(route.tabId, message);
+    } catch (error) {
+      if (!isReceivingEndMissingError(error)) {
+        throw error;
+      }
+
+      await ensureContentScriptInjected(route.tabId);
+      rawResponse = await chrome.tabs.sendMessage(route.tabId, message);
+    }
+
+    const response = parseContentCommandResponse(rawResponse);
 
     if (!response) {
       route.lastError = 'Malformed command response from content script.';
@@ -508,6 +736,12 @@ async function handleControllerMessage(message: ControllerToBackgroundMessage): 
       return { ok: true };
     }
 
+    case CONTROLLER_TO_BG.SET_MAIN_ROUTE:
+      return setMainRouteWithEquivalentOffsets(message.payload.routeId);
+
+    case CONTROLLER_TO_BG.SET_ROUTE_OFFSET:
+      return setRouteOffset(message.payload.routeId, message.payload.offsetSec);
+
     case CONTROLLER_TO_BG.ROUTE_COMMAND:
       return executeRouteCommand(message.payload.routeId, message.payload.command, message.payload.args ?? {});
 
@@ -542,6 +776,16 @@ function handleContentPlayerEvent(sender: chrome.runtime.MessageSender, message:
 chrome.runtime.onInstalled.addListener(() => {
   // Keep startup behavior explicit for easier debugging.
   ensureSessionRouteRefs();
+});
+
+chrome.action.onClicked.addListener((tab) => {
+  if (typeof tab.windowId === 'number' && !isExtensionInternalUrl(tab.url)) {
+    sourceWindowId = tab.windowId;
+  }
+
+  void openOrFocusControllerWindow().catch((error) => {
+    console.error('Failed to open controller window:', toErrorMessage(error, 'Unknown error'));
+  });
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -600,5 +844,15 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
     route.updatedAtMs = Date.now();
     emitSessionUpdated('tab-title-updated');
+  }
+});
+
+chrome.windows.onRemoved.addListener((windowId) => {
+  if (windowId === controllerWindowId) {
+    controllerWindowId = null;
+  }
+
+  if (windowId === sourceWindowId) {
+    sourceWindowId = null;
   }
 });

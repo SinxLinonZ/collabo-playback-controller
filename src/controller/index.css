@@ -70,6 +70,7 @@ label {
 }
 
 select,
+input,
 button {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -91,6 +92,10 @@ button.danger {
   color: var(--danger);
 }
 
+input {
+  min-width: 210px;
+}
+
 .list {
   margin: 0;
   padding: 0;
@@ -108,6 +113,11 @@ button.danger {
   gap: 6px;
 }
 
+.card.main-route {
+  border-color: #1f7a3a;
+  box-shadow: inset 0 0 0 1px rgba(31, 122, 58, 0.18);
+}
+
 .card-head {
   display: flex;
   align-items: start;
@@ -121,6 +131,18 @@ button.danger {
   word-break: break-word;
 }
 
+.main-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #166534;
+  background: #dcfce7;
+  border: 1px solid #86efac;
+}
+
 .meta {
   margin: 0;
   color: var(--muted);
@@ -129,6 +151,22 @@ button.danger {
 }
 
 .card-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.offset-controls {
+  display: grid;
+  gap: 6px;
+}
+
+.offset-input {
+  min-width: 0;
+  max-width: 140px;
+}
+
+.offset-step-actions {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;

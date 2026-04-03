@@ -3,6 +3,8 @@ export const CONTROLLER_TO_BG = {
   LIST_YOUTUBE_TABS: 'controller/list-youtube-tabs',
   IMPORT_TAB: 'controller/import-tab',
   REMOVE_ROUTE: 'controller/remove-route',
+  SET_MAIN_ROUTE: 'controller/set-main-route',
+  SET_ROUTE_OFFSET: 'controller/set-route-offset',
   ROUTE_COMMAND: 'controller/route-command',
   GET_SESSION: 'controller/get-session',
 } as const;
@@ -70,6 +72,7 @@ export interface RouteState {
   tabTitle: string;
   videoTitle: string;
   url: string;
+  offsetSec: number;
   status: RouteStatus;
   currentTimeSec: number;
   durationSec: number | null;
@@ -112,6 +115,21 @@ export interface ControllerRemoveRouteMessage {
   };
 }
 
+export interface ControllerSetMainRouteMessage {
+  type: (typeof CONTROLLER_TO_BG)['SET_MAIN_ROUTE'];
+  payload: {
+    routeId: string;
+  };
+}
+
+export interface ControllerSetRouteOffsetMessage {
+  type: (typeof CONTROLLER_TO_BG)['SET_ROUTE_OFFSET'];
+  payload: {
+    routeId: string;
+    offsetSec: number;
+  };
+}
+
 export interface ControllerRouteCommandMessage {
   type: (typeof CONTROLLER_TO_BG)['ROUTE_COMMAND'];
   payload: {
@@ -130,6 +148,8 @@ export type ControllerToBackgroundMessage =
   | ControllerListTabsMessage
   | ControllerImportTabMessage
   | ControllerRemoveRouteMessage
+  | ControllerSetMainRouteMessage
+  | ControllerSetRouteOffsetMessage
   | ControllerRouteCommandMessage
   | ControllerGetSessionMessage;
 
@@ -157,6 +177,14 @@ export interface ImportTabResponse extends SuccessResponseBase {
 
 export interface RemoveRouteResponse extends SuccessResponseBase {}
 
+export interface SetMainRouteResponse extends SuccessResponseBase {
+  session: SessionSnapshot;
+}
+
+export interface SetRouteOffsetResponse extends SuccessResponseBase {
+  session: SessionSnapshot;
+}
+
 export interface RouteCommandResponse extends SuccessResponseBase {
   snapshot: RouteSnapshot | null;
 }
@@ -170,6 +198,8 @@ export type ControllerResponse =
   | ListTabsResponse
   | ImportTabResponse
   | RemoveRouteResponse
+  | SetMainRouteResponse
+  | SetRouteOffsetResponse
   | RouteCommandResponse
   | GetSessionResponse
   | ErrorResponse;
