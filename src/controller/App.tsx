@@ -1,5 +1,32 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Badge,
+  Box,
+  Button,
+  Checkbox,
+  Group,
+  NativeSelect,
+  Paper,
+  SimpleGrid,
+  Slider,
+  Stack,
+  Switch,
+  Text,
+  TextInput,
+  Title,
+} from '@mantine/core';
+import {
+  FiArrowUpRight,
+  FiClock,
+  FiDownload,
+  FiPause,
+  FiPlay,
+  FiRefreshCw,
+  FiSearch,
+  FiSliders,
+  FiTrash2,
+} from 'react-icons/fi';
+import {
   BG_EVENT,
   CONTROLLER_TO_BG,
   ERROR_CODE,
@@ -1379,7 +1406,7 @@ export default function App() {
         const hello = await sendToBackground({ type: CONTROLLER_TO_BG.HELLO });
 
         if (isErrorResponse(hello)) {
-          throw new Error(hello.error);
+          throw new Error(formatErrorResponse(hello));
         }
 
         if (!('version' in hello)) {
@@ -1411,292 +1438,370 @@ export default function App() {
     viewState.candidates.length > 0 && selectedCandidateCount === viewState.candidates.length;
 
   return (
-    <main className="app">
-      <header className="header">
-        <h1>Archive Sync Controller</h1>
-        <p className="subtitle">TabSync Mode - MVP Bootstrap</p>
-      </header>
+    <Stack gap="md" className="app">
+      <Paper withBorder radius="lg" p="md" className="panel">
+        <Group justify="space-between" align="flex-start">
+          <Box>
+            <Group gap="xs" align="center">
+              <Title order={3}>Archive Sync Controller</Title>
+              <Badge variant="light" color="blue">
+                TabSync Mode
+              </Badge>
+            </Group>
+            <Text size="sm" c="dimmed">
+              Compact multi-tab control console
+            </Text>
+          </Box>
+          <Group gap="md">
+            <Switch
+              checked={autoFocusEnabled}
+              onChange={toggleAutoFocus}
+              label="Auto Focus"
+              size="sm"
+            />
+            <Switch
+              checked={autoSyncCorrectionEnabled}
+              onChange={toggleAutoSyncCorrection}
+              label="Auto Sync Correction"
+              size="sm"
+            />
+          </Group>
+        </Group>
+      </Paper>
 
-      <section className="panel">
-        <h2>Tab Scan</h2>
-        <div className="row controls-row">
-          <label htmlFor="scanScope">Scope</label>
-          <select
-            id="scanScope"
-            value={scanScope}
-            onChange={(event) => setScanScope(event.target.value as TabScanScope)}
-          >
-            <option value={TAB_SCAN_SCOPE.ALL_WINDOWS}>All Windows</option>
-            <option value={TAB_SCAN_SCOPE.CURRENT_WINDOW}>Current Window</option>
-          </select>
-          <button type="button" onClick={() => void handleScanTabs(scanScope)}>
-            Scan
-          </button>
-          <button
-            type="button"
-            disabled={viewState.candidates.length === 0 || allCandidatesSelected}
-            onClick={handleSelectAllCandidates}
-          >
-            Select All
-          </button>
-          <button
-            type="button"
-            disabled={selectedCandidateCount === 0}
-            onClick={handleClearCandidateSelection}
-          >
-            Clear Selection
-          </button>
-          <button
-            type="button"
-            disabled={selectedCandidateCount === 0}
-            onClick={() => {
-              void handleImportSelectedTabs().catch((error) => {
-                setStatus(toErrorMessage(error, 'Import selected failed.'));
-              });
-            }}
-          >
-            Import Selected
-          </button>
-          <span className="scan-selection-meta">{`selected:${selectedCandidateCount}/${viewState.candidates.length}`}</span>
-        </div>
-        <ul className="list">
-          {viewState.candidates.length === 0 ? (
-            <li className="empty">No candidate tabs.</li>
-          ) : (
-            viewState.candidates.map((tab) => {
-              const isImported = importedTabIds.has(tab.tabId);
-              const isSelected = Boolean(selectedCandidateTabIds[tab.tabId]);
+      <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
+        <Paper withBorder radius="lg" p="md" className="panel">
+          <Stack gap="sm">
+            <Group justify="space-between" align="center">
+              <Group gap={6} align="center">
+                <FiSearch />
+                <Title order={5}>Tab Scan</Title>
+              </Group>
+              <Badge variant="light" color="gray">
+                {`selected:${selectedCandidateCount}/${viewState.candidates.length}`}
+              </Badge>
+            </Group>
 
-              return (
-                <li key={tab.tabId} className="card">
-                  <div className="card-head">
-                    <label className="candidate-title">
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={(event) => {
-                          handleToggleCandidateSelection(tab.tabId, event.target.checked);
-                        }}
-                      />
-                      <span className="title">{tab.title || '(Untitled tab)'}</span>
-                    </label>
-                    <div className="candidate-actions">
-                      <button
+            <Group gap="xs" wrap="wrap" align="end">
+              <NativeSelect
+                label="Scope"
+                value={scanScope}
+                onChange={(event) => setScanScope(event.currentTarget.value as TabScanScope)}
+                data={[
+                  { value: TAB_SCAN_SCOPE.ALL_WINDOWS, label: 'All Windows' },
+                  { value: TAB_SCAN_SCOPE.CURRENT_WINDOW, label: 'Current Window' },
+                ]}
+              />
+              <Button
+                leftSection={<FiSearch size={14} />}
+                onClick={() => void handleScanTabs(scanScope)}
+              >
+                Scan
+              </Button>
+              <Button
+                variant="default"
+                disabled={viewState.candidates.length === 0 || allCandidatesSelected}
+                onClick={handleSelectAllCandidates}
+              >
+                Select All
+              </Button>
+              <Button
+                variant="default"
+                disabled={selectedCandidateCount === 0}
+                onClick={handleClearCandidateSelection}
+              >
+                Clear
+              </Button>
+              <Button
+                leftSection={<FiDownload size={14} />}
+                disabled={selectedCandidateCount === 0}
+                onClick={() => {
+                  void handleImportSelectedTabs().catch((error) => {
+                    setStatus(toErrorMessage(error, 'Import selected failed.'));
+                  });
+                }}
+              >
+                Import Selected
+              </Button>
+            </Group>
+
+            <Stack gap="xs">
+              {viewState.candidates.length === 0 ? (
+                <Text c="dimmed" fs="italic">
+                  No candidate tabs.
+                </Text>
+              ) : (
+                viewState.candidates.map((tab) => {
+                  const isImported = importedTabIds.has(tab.tabId);
+                  const isSelected = Boolean(selectedCandidateTabIds[tab.tabId]);
+
+                  return (
+                    <Paper key={tab.tabId} withBorder radius="md" p="sm" className="card candidate-card">
+                      <Group justify="space-between" align="flex-start" wrap="nowrap">
+                        <Checkbox
+                          checked={isSelected}
+                          onChange={(event) => {
+                            handleToggleCandidateSelection(tab.tabId, event.currentTarget.checked);
+                          }}
+                          label={tab.title || '(Untitled tab)'}
+                          className="candidate-title"
+                        />
+                        <Button
+                          size="xs"
+                          variant={isImported ? 'light' : 'filled'}
+                          disabled={isImported}
+                          onClick={() => {
+                            void handleImportTab(tab.tabId);
+                          }}
+                        >
+                          {isImported ? 'Imported' : 'Import'}
+                        </Button>
+                      </Group>
+                      <Text className="meta">{`tab:${tab.tabId} | window:${tab.windowId} | ${tab.url}`}</Text>
+                    </Paper>
+                  );
+                })
+              )}
+            </Stack>
+          </Stack>
+        </Paper>
+
+        <Paper withBorder radius="lg" p="md" className="panel">
+          <Stack gap="sm">
+            <Group gap={6} align="center">
+              <FiSliders />
+              <Title order={5}>Global Controls</Title>
+            </Group>
+            <Group gap="xs" wrap="wrap">
+              <Button
+                variant="default"
+                leftSection={<FiRefreshCw size={14} />}
+                onClick={() => {
+                  void refreshSession()
+                    .then(() => {
+                      setStatus('Session refreshed.');
+                    })
+                    .catch((error) => {
+                      setStatus(toErrorMessage(error, 'Refresh failed.'));
+                    });
+                }}
+              >
+                Refresh Session
+              </Button>
+              <Button
+                leftSection={<FiPlay size={14} />}
+                onClick={() => {
+                  void runAllRoutesCommand(ROUTE_COMMAND.PLAY).catch((error) => {
+                    setStatus(toErrorMessage(error, 'Play all failed.'));
+                  });
+                }}
+              >
+                Play All
+              </Button>
+              <Button
+                color="gray"
+                leftSection={<FiPause size={14} />}
+                onClick={() => {
+                  void runAllRoutesCommand(ROUTE_COMMAND.PAUSE).catch((error) => {
+                    setStatus(toErrorMessage(error, 'Pause all failed.'));
+                  });
+                }}
+              >
+                Pause All
+              </Button>
+              <TextInput
+                placeholder="Seek target: ss / mm:ss / hh:mm:ss"
+                value={seekAllInput}
+                onChange={(event) => setSeekAllInput(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void runSeekAll().catch((error) => {
+                      setStatus(toErrorMessage(error, 'Seek all failed.'));
+                    });
+                  }
+                }}
+              />
+              <Button
+                leftSection={<FiClock size={14} />}
+                onClick={() => {
+                  void runSeekAll().catch((error) => {
+                    setStatus(toErrorMessage(error, 'Seek all failed.'));
+                  });
+                }}
+              >
+                Seek All
+              </Button>
+              <Button
+                variant="default"
+                leftSection={<FiArrowUpRight size={14} />}
+                onClick={() => {
+                  void runSyncNow().catch((error) => {
+                    setStatus(toErrorMessage(error, 'Sync now failed.'));
+                  });
+                }}
+              >
+                Sync Now
+              </Button>
+              <Button
+                variant="default"
+                leftSection={<FiDownload size={14} />}
+                onClick={() => {
+                  void runReadOffsets().catch((error) => {
+                    setStatus(toErrorMessage(error, 'Read offsets failed.'));
+                  });
+                }}
+              >
+                Read Offsets
+              </Button>
+            </Group>
+          </Stack>
+        </Paper>
+      </SimpleGrid>
+
+      <Paper withBorder radius="lg" p="md" className="panel">
+        <Stack gap="sm">
+          <Group justify="space-between" align="center">
+            <Title order={5}>Session Routes</Title>
+            <Badge variant="light" color="gray">{`${viewState.session.routes.length} route(s)`}</Badge>
+          </Group>
+
+          <Stack gap="xs">
+            {viewState.session.routes.length === 0 ? (
+              <Text c="dimmed" fs="italic">
+                No imported routes.
+              </Text>
+            ) : (
+              viewState.session.routes.map((route) => {
+                const isMainRoute = route.routeId === viewState.session.mainRouteId;
+                const isSoloRoute = route.routeId === viewState.session.soloRouteId;
+                const isFocusedRoute = route.routeId === focusedRouteId;
+                const isForcedMutedBySolo =
+                  typeof viewState.session.soloRouteId === 'string' &&
+                  viewState.session.soloRouteId !== route.routeId;
+                const routeOffsetValue =
+                  routeOffsetDrafts[route.routeId] ?? normalizeOffsetSeconds(route.offsetSec).toFixed(2);
+                const routeVolumeValue =
+                  routeVolumeDrafts[route.routeId] ?? String(normalizeVolumePercent(route.targetVolumePercent));
+                const routeVolumePercent =
+                  parseVolumeInputToPercent(routeVolumeValue) ?? normalizeVolumePercent(route.targetVolumePercent);
+                const runtimeState = routeRuntimeById[route.routeId];
+
+                return (
+                  <Paper
+                    key={route.routeId}
+                    withBorder
+                    radius="md"
+                    p="sm"
+                    className={`card${isMainRoute ? ' main-route' : ''}${isFocusedRoute ? ' focused-route' : ''}`}
+                    onClick={(event) => {
+                      if (!autoFocusEnabled) {
+                        return;
+                      }
+
+                      if (isRouteCardInteractiveTarget(event.target)) {
+                        return;
+                      }
+
+                      void handleFocusRouteTab(route.routeId);
+                    }}
+                  >
+                    <Group justify="space-between" align="flex-start" wrap="nowrap" className="card-head">
+                      <Group gap="xs" align="center">
+                        <Text fw={600} className="title">
+                          {route.videoTitle || route.tabTitle || '(Unknown title)'}
+                        </Text>
+                        {isMainRoute ? (
+                          <Badge size="xs" color="green" variant="light">
+                            MAIN
+                          </Badge>
+                        ) : null}
+                        {isSoloRoute ? (
+                          <Badge size="xs" color="yellow" variant="light">
+                            SOLO
+                          </Badge>
+                        ) : null}
+                      </Group>
+                      <Button
                         type="button"
-                        disabled={isImported}
+                        size="xs"
+                        color="red"
+                        variant="light"
+                        leftSection={<FiTrash2 size={13} />}
                         onClick={() => {
-                          void handleImportTab(tab.tabId);
+                          void handleRemoveRoute(route.routeId);
                         }}
                       >
-                        {isImported ? 'Imported' : 'Import'}
-                      </button>
-                    </div>
-                  </div>
-                  <p className="meta">{`tab:${tab.tabId} | window:${tab.windowId} | ${tab.url}`}</p>
-                </li>
-              );
-            })
-          )}
-        </ul>
-      </section>
+                        Remove
+                      </Button>
+                    </Group>
 
-      <section className="panel">
-        <h2>Session Routes</h2>
-        <div className="row controls-row">
-          <button
-            type="button"
-            onClick={() => {
-              void refreshSession()
-                .then(() => {
-                  setStatus('Session refreshed.');
-                })
-                .catch((error) => {
-                  setStatus(toErrorMessage(error, 'Refresh failed.'));
-                });
-            }}
-          >
-            Refresh Session
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              void runAllRoutesCommand(ROUTE_COMMAND.PLAY).catch((error) => {
-                setStatus(toErrorMessage(error, 'Play all failed.'));
-              });
-            }}
-          >
-            Play All
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              void runAllRoutesCommand(ROUTE_COMMAND.PAUSE).catch((error) => {
-                setStatus(toErrorMessage(error, 'Pause all failed.'));
-              });
-            }}
-          >
-            Pause All
-          </button>
-          <input
-            type="text"
-            placeholder="Seek target: ss / mm:ss / hh:mm:ss"
-            value={seekAllInput}
-            onChange={(event) => setSeekAllInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                void runSeekAll().catch((error) => {
-                  setStatus(toErrorMessage(error, 'Seek all failed.'));
-                });
-              }
-            }}
-          />
-          <button
-            type="button"
-            onClick={() => {
-              void runSeekAll().catch((error) => {
-                setStatus(toErrorMessage(error, 'Seek all failed.'));
-              });
-            }}
-          >
-            Seek All
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              void runSyncNow().catch((error) => {
-                setStatus(toErrorMessage(error, 'Sync now failed.'));
-              });
-            }}
-          >
-            Sync Now
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              void runReadOffsets().catch((error) => {
-                setStatus(toErrorMessage(error, 'Read offsets failed.'));
-              });
-            }}
-          >
-            Read Offsets
-          </button>
-          <button
-            type="button"
-            onClick={toggleAutoFocus}
-          >
-            {autoFocusEnabled ? 'Auto Focus: ON' : 'Auto Focus: OFF'}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              toggleAutoSyncCorrection();
-            }}
-          >
-            {autoSyncCorrectionEnabled ? 'Stop Auto Sync Correction' : 'Start Auto Sync Correction'}
-          </button>
-        </div>
+                    <Text className="meta">
+                      {[
+                        `route:${route.routeId}`,
+                        `tab:${route.tabId}`,
+                        `status:${route.status}`,
+                        `time:${formatTime(route.currentTimeSec)}`,
+                        `offset:${normalizeOffsetSeconds(route.offsetSec).toFixed(2)}s`,
+                        `vol:${normalizeVolumePercent(route.targetVolumePercent)}%`,
+                        `baseMute:${route.targetMuted ? 'on' : 'off'}`,
+                        `appliedMute:${route.appliedMuted ? 'on' : 'off'}`,
+                        `drift:${formatDrift(runtimeState?.driftSec ?? null)}`,
+                        `sync:${runtimeState?.syncStatus ?? 'unknown'}`,
+                      ].join(' | ')}
+                    </Text>
 
-        <ul className="list">
-          {viewState.session.routes.length === 0 ? (
-            <li className="empty">No imported routes.</li>
-          ) : (
-            viewState.session.routes.map((route) => {
-              const isMainRoute = route.routeId === viewState.session.mainRouteId;
-              const isSoloRoute = route.routeId === viewState.session.soloRouteId;
-              const isFocusedRoute = route.routeId === focusedRouteId;
-              const isForcedMutedBySolo =
-                typeof viewState.session.soloRouteId === 'string' &&
-                viewState.session.soloRouteId !== route.routeId;
-              const routeOffsetValue =
-                routeOffsetDrafts[route.routeId] ?? normalizeOffsetSeconds(route.offsetSec).toFixed(2);
-              const routeVolumeValue =
-                routeVolumeDrafts[route.routeId] ?? String(normalizeVolumePercent(route.targetVolumePercent));
-              const runtimeState = routeRuntimeById[route.routeId];
+                    {runtimeState?.lastError ? (
+                      <Text className="meta error-meta">{`sync-error:${runtimeState.lastError}`}</Text>
+                    ) : null}
 
-              return (
-                <li
-                  key={route.routeId}
-                  className={`card${isMainRoute ? ' main-route' : ''}${isFocusedRoute ? ' focused-route' : ''}`}
-                  onClick={(event) => {
-                    if (!autoFocusEnabled) {
-                      return;
-                    }
+                    <Group gap="xs" wrap="wrap" className="offset-controls">
+                      <TextInput
+                        className="offset-input"
+                        inputMode="decimal"
+                        placeholder="offset sec"
+                        title="Supports signed seconds or signed mm:ss / hh:mm:ss"
+                        value={routeOffsetValue}
+                        onChange={(event) => {
+                          const nextValue = event.currentTarget.value;
+                          setRouteOffsetDrafts((prev) => ({
+                            ...prev,
+                            [route.routeId]: nextValue,
+                          }));
+                        }}
+                        onFocus={() => {
+                          setEditingRouteOffsets((prev) => ({
+                            ...prev,
+                            [route.routeId]: true,
+                          }));
+                        }}
+                        onBlur={() => {
+                          setEditingRouteOffsets((prev) => ({
+                            ...prev,
+                            [route.routeId]: false,
+                          }));
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
 
-                    if (isRouteCardInteractiveTarget(event.target)) {
-                      return;
-                    }
+                            const parsedOffset = parseOffsetInputToSeconds(routeOffsetValue);
+                            if (parsedOffset === null) {
+                              setStatus('Offset invalid. Use signed seconds, mm:ss, or hh:mm:ss.');
+                              return;
+                            }
 
-                    void handleFocusRouteTab(route.routeId);
-                  }}
-                >
-                  <div className="card-head">
-                    <p className="title">
-                      {route.videoTitle || route.tabTitle || '(Unknown title)'}
-                      {isMainRoute ? <span className="main-badge">MAIN</span> : null}
-                      {isSoloRoute ? <span className="solo-badge">SOLO</span> : null}
-                    </p>
-                    <button
-                      type="button"
-                      className="danger"
-                      onClick={() => {
-                        void handleRemoveRoute(route.routeId);
-                      }}
-                    >
-                      Remove
-                    </button>
-                  </div>
-
-                  <p className="meta">
-                    {[
-                      `route:${route.routeId}`,
-                      `tab:${route.tabId}`,
-                      `status:${route.status}`,
-                      `time:${formatTime(route.currentTimeSec)}`,
-                      `offset:${normalizeOffsetSeconds(route.offsetSec).toFixed(2)}s`,
-                      `vol:${normalizeVolumePercent(route.targetVolumePercent)}%`,
-                      `baseMute:${route.targetMuted ? 'on' : 'off'}`,
-                      `appliedMute:${route.appliedMuted ? 'on' : 'off'}`,
-                      `drift:${formatDrift(runtimeState?.driftSec ?? null)}`,
-                      `sync:${runtimeState?.syncStatus ?? 'unknown'}`,
-                    ].join(' | ')}
-                  </p>
-
-                  {runtimeState?.lastError ? (
-                    <p className="meta error-meta">{`sync-error:${runtimeState.lastError}`}</p>
-                  ) : null}
-
-                  <div className="offset-controls">
-                    <input
-                      type="text"
-                      className="offset-input"
-                      inputMode="decimal"
-                      placeholder="offset sec"
-                      title="Supports signed seconds or signed mm:ss / hh:mm:ss"
-                      value={routeOffsetValue}
-                      onChange={(event) => {
-                        const nextValue = event.target.value;
-                        setRouteOffsetDrafts((prev) => ({
-                          ...prev,
-                          [route.routeId]: nextValue,
-                        }));
-                      }}
-                      onFocus={() => {
-                        setEditingRouteOffsets((prev) => ({
-                          ...prev,
-                          [route.routeId]: true,
-                        }));
-                      }}
-                      onBlur={() => {
-                        setEditingRouteOffsets((prev) => ({
-                          ...prev,
-                          [route.routeId]: false,
-                        }));
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
+                            void handleSetRouteOffset(route.routeId, parsedOffset);
+                          }
+                        }}
+                      />
+                      <Button
+                        size="xs"
+                        onMouseDown={(event) => {
+                          // Keep the input focused until click, so blur side effects do not race submission.
                           event.preventDefault();
-
+                        }}
+                        onClick={() => {
                           const parsedOffset = parseOffsetInputToSeconds(routeOffsetValue);
                           if (parsedOffset === null) {
                             setStatus('Offset invalid. Use signed seconds, mm:ss, or hh:mm:ss.');
@@ -1704,183 +1809,168 @@ export default function App() {
                           }
 
                           void handleSetRouteOffset(route.routeId, parsedOffset);
-                        }
-                      }}
-                    />
-                    <button
-                      type="button"
-                      onMouseDown={(event) => {
-                        // Keep the input focused until click, so blur side effects do not race submission.
-                        event.preventDefault();
-                      }}
-                      onClick={() => {
-                        const parsedOffset = parseOffsetInputToSeconds(routeOffsetValue);
-                        if (parsedOffset === null) {
-                          setStatus('Offset invalid. Use signed seconds, mm:ss, or hh:mm:ss.');
-                          return;
-                        }
-
-                        void handleSetRouteOffset(route.routeId, parsedOffset);
-                      }}
-                    >
-                      Apply Offset
-                    </button>
-
-                    <div className="offset-step-actions">
-                      {[
-                        { label: '-1s', delta: -1 },
-                        { label: '-0.1s', delta: -0.1 },
-                        { label: '+0.1s', delta: 0.1 },
-                        { label: '+1s', delta: 1 },
-                      ].map((step) => (
-                        <button
-                          key={step.label}
-                          type="button"
-                          onClick={() => {
-                            const fromInput = parseOffsetInputToSeconds(routeOffsetValue);
-                            const baseOffset = fromInput ?? route.offsetSec;
-                            const nextOffset = normalizeOffsetSeconds(baseOffset + step.delta);
-                            void handleSetRouteOffset(route.routeId, nextOffset);
-                          }}
-                        >
-                          {step.label}
-                        </button>
-                      ))}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void handleSetRouteOffset(route.routeId, 0);
                         }}
                       >
-                        Offset 0
-                      </button>
-                    </div>
-                  </div>
+                        Apply Offset
+                      </Button>
 
-                  <div className="audio-controls">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void handleSetRouteMuted(route.routeId, !route.targetMuted);
-                      }}
-                    >
-                      {route.targetMuted ? 'Base Unmute' : 'Base Mute'}
-                    </button>
+                      <Group gap="xs" wrap="wrap" className="offset-step-actions">
+                        {[
+                          { label: '-1s', delta: -1 },
+                          { label: '-0.1s', delta: -0.1 },
+                          { label: '+0.1s', delta: 0.1 },
+                          { label: '+1s', delta: 1 },
+                        ].map((step) => (
+                          <Button
+                            key={step.label}
+                            size="xs"
+                            variant="default"
+                            onClick={() => {
+                              const fromInput = parseOffsetInputToSeconds(routeOffsetValue);
+                              const baseOffset = fromInput ?? route.offsetSec;
+                              const nextOffset = normalizeOffsetSeconds(baseOffset + step.delta);
+                              void handleSetRouteOffset(route.routeId, nextOffset);
+                            }}
+                          >
+                            {step.label}
+                          </Button>
+                        ))}
+                        <Button
+                          size="xs"
+                          variant="default"
+                          onClick={() => {
+                            void handleSetRouteOffset(route.routeId, 0);
+                          }}
+                        >
+                          Offset 0
+                        </Button>
+                      </Group>
+                    </Group>
 
-                    <div className="volume-slider-group">
-                      <input
-                        type="range"
-                        className="volume-slider"
-                        min={0}
-                        max={100}
-                        step={1}
-                        value={routeVolumeValue}
-                        onChange={(event) => {
-                          const nextValue = event.target.value;
-                          const parsedVolumePercent = parseVolumeInputToPercent(nextValue);
-                          if (parsedVolumePercent === null) {
-                            return;
-                          }
-
-                          setRouteVolumeDrafts((prev) => ({
-                            ...prev,
-                            [route.routeId]: String(parsedVolumePercent),
-                          }));
-                          setEditingRouteVolumes((prev) => ({
-                            ...prev,
-                            [route.routeId]: true,
-                          }));
-                          scheduleRouteVolumeCommit(route.routeId, parsedVolumePercent);
+                    <Group gap="xs" wrap="wrap" align="center" className="audio-controls">
+                      <Button
+                        size="xs"
+                        variant="default"
+                        onClick={() => {
+                          void handleSetRouteMuted(route.routeId, !route.targetMuted);
                         }}
-                        onFocus={() => {
-                          setEditingRouteVolumes((prev) => ({
-                            ...prev,
-                            [route.routeId]: true,
-                          }));
+                      >
+                        {route.targetMuted ? 'Base Unmute' : 'Base Mute'}
+                      </Button>
+
+                      <Box data-prevent-route-focus="true" className="volume-slider-group">
+                        <Slider
+                          className="volume-slider"
+                          min={0}
+                          max={100}
+                          step={1}
+                          value={routeVolumePercent}
+                          onChange={(nextValue) => {
+                            const parsedVolumePercent = parseVolumeInputToPercent(String(nextValue));
+                            if (parsedVolumePercent === null) {
+                              return;
+                            }
+
+                            setRouteVolumeDrafts((prev) => ({
+                              ...prev,
+                              [route.routeId]: String(parsedVolumePercent),
+                            }));
+                            setEditingRouteVolumes((prev) => ({
+                              ...prev,
+                              [route.routeId]: true,
+                            }));
+                            scheduleRouteVolumeCommit(route.routeId, parsedVolumePercent);
+                          }}
+                          onChangeEnd={(nextValue) => {
+                            setEditingRouteVolumes((prev) => ({
+                              ...prev,
+                              [route.routeId]: false,
+                            }));
+                            flushRouteVolumeCommit(route.routeId, String(nextValue));
+                          }}
+                        />
+                        <Text className="volume-value">{`${routeVolumePercent}%`}</Text>
+                      </Box>
+
+                      <Button
+                        size="xs"
+                        variant={isSoloRoute ? 'filled' : 'default'}
+                        onClick={() => {
+                          void handleSetSoloRoute(isSoloRoute ? null : route.routeId);
                         }}
-                        onBlur={() => {
-                          setEditingRouteVolumes((prev) => ({
-                            ...prev,
-                            [route.routeId]: false,
-                          }));
-                          flushRouteVolumeCommit(route.routeId, routeVolumeValue);
+                      >
+                        {isSoloRoute ? 'Unsolo' : 'Solo'}
+                      </Button>
+
+                      <Text className="audio-meta">
+                        {isForcedMutedBySolo ? 'Muted by solo' : route.appliedMuted ? 'Muted' : 'Audible'}
+                      </Text>
+                    </Group>
+
+                    <Group gap="xs" wrap="wrap" className="card-actions">
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant={isMainRoute ? 'light' : 'default'}
+                        disabled={isMainRoute}
+                        onClick={() => {
+                          void handleSetMainRoute(route.routeId);
                         }}
-                        onPointerUp={() => {
-                          flushRouteVolumeCommit(route.routeId, routeVolumeValue);
+                      >
+                        {isMainRoute ? 'Main Route' : 'Set Main'}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="xs"
+                        leftSection={<FiPlay size={13} />}
+                        onClick={() => {
+                          void handleRouteCommand(route.routeId, ROUTE_COMMAND.PLAY).catch((error) => {
+                            setStatus(toErrorMessage(error, 'Play failed.'));
+                          });
                         }}
-                      />
-                      <span className="volume-value">{`${routeVolumeValue}%`}</span>
-                    </div>
+                      >
+                        Play
+                      </Button>
+                      <Button
+                        type="button"
+                        size="xs"
+                        color="gray"
+                        leftSection={<FiPause size={13} />}
+                        onClick={() => {
+                          void handleRouteCommand(route.routeId, ROUTE_COMMAND.PAUSE).catch((error) => {
+                            setStatus(toErrorMessage(error, 'Pause failed.'));
+                          });
+                        }}
+                      >
+                        Pause
+                      </Button>
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant="default"
+                        leftSection={<FiRefreshCw size={13} />}
+                        onClick={() => {
+                          void handleRouteCommand(route.routeId, ROUTE_COMMAND.GET_STATUS).catch((error) => {
+                            setStatus(toErrorMessage(error, 'Pull status failed.'));
+                          });
+                        }}
+                      >
+                        Pull Status
+                      </Button>
+                    </Group>
+                  </Paper>
+                );
+              })
+            )}
+          </Stack>
+        </Stack>
+      </Paper>
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void handleSetSoloRoute(isSoloRoute ? null : route.routeId);
-                      }}
-                    >
-                      {isSoloRoute ? 'Unsolo' : 'Solo'}
-                    </button>
-
-                    <span className="audio-meta">
-                      {isForcedMutedBySolo
-                        ? 'Muted by solo'
-                        : route.appliedMuted
-                          ? 'Muted'
-                          : 'Audible'}
-                    </span>
-                  </div>
-
-                  <div className="card-actions">
-                    <button
-                      type="button"
-                      disabled={isMainRoute}
-                      onClick={() => {
-                        void handleSetMainRoute(route.routeId);
-                      }}
-                    >
-                      {isMainRoute ? 'Main Route' : 'Set Main'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void handleRouteCommand(route.routeId, ROUTE_COMMAND.PLAY).catch((error) => {
-                          setStatus(toErrorMessage(error, 'Play failed.'));
-                        });
-                      }}
-                    >
-                      Play
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void handleRouteCommand(route.routeId, ROUTE_COMMAND.PAUSE).catch((error) => {
-                          setStatus(toErrorMessage(error, 'Pause failed.'));
-                        });
-                      }}
-                    >
-                      Pause
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void handleRouteCommand(route.routeId, ROUTE_COMMAND.GET_STATUS).catch((error) => {
-                          setStatus(toErrorMessage(error, 'Pull status failed.'));
-                        });
-                      }}
-                    >
-                      Pull Status
-                    </button>
-                  </div>
-                </li>
-              );
-            })
-          )}
-        </ul>
-      </section>
-
-      <footer className="status-bar">
-        <span>{statusText}</span>
-      </footer>
-    </main>
+      <Paper withBorder radius="md" px="sm" py={8} className="status-bar">
+        <Text size="xs" c="dimmed">
+          {statusText}
+        </Text>
+      </Paper>
+    </Stack>
   );
 }
