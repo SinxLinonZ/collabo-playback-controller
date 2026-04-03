@@ -1,88 +1,82 @@
-# YouTube 多视角 Archive Viewer TODO
+# YouTube Archive Sync Controller TODO (v0.2)
 
-## MVP（Milestone 1）
+## 当前路线
+- [x] 确认架构切换到 Extension-first
+- [x] 确认主模式为 `TabSync Mode`（控制现有 tabs）
+- [x] 确认可选模式为 `Embed Grid Mode`
+- [ ] 冻结 v0.2 需求边界（本周）
 
-### 1. 项目骨架与基础设施
-- [ ] 初始化前端项目结构（页面、组件、状态管理、样式）
-- [ ] 接入 YouTube IFrame Player API
-- [ ] 建立统一类型定义（Player 路状态、同步状态、音频状态、Session 模型）
-- [ ] 建立错误处理与日志基础（单路错误不影响全局）
+## Milestone 1: Extension MVP（主模式）
 
-### 2. 视频源管理
-- [ ] 实现单条 URL 输入并添加视频
-- [ ] 实现 YouTube URL 校验与 `videoId` 解析
-- [ ] 为每个视频创建独立播放器实例
-- [ ] 支持删除单路视频并销毁实例
-- [ ] 删除主参考路时自动重选主参考路（或提示用户重选）
-- [ ] 单路加载失败时显示错误状态，不阻塞其他路
+### A. Extension 基础骨架
+- [ ] 初始化 Chrome Extension (MV3) 项目结构
+- [ ] 建立 `controller page` / `service worker` / `content script` 三层模块
+- [ ] 定义统一类型：Route, SyncState, AudioState, Session
+- [ ] 建立消息协议（command/event schema + version）
 
-### 3. 多播放器展示
-- [ ] 实现 Grid 同屏布局（至少稳定支持 2~4 路）
-- [ ] 每路面板展示：名称、状态、当前时间、offset、音频控件
-- [ ] 状态枚举接入 UI：未初始化/加载中/已就绪/播放中/暂停中/缓冲中/错误
+### B. Tab 导入与路由管理
+- [ ] 枚举当前浏览器 YouTube tabs
+- [ ] 从 tab 导入到会话（生成 routeId）
+- [ ] 路由列表展示（title/url/tabId/status）
+- [ ] 删除路由仅移出会话，不关闭 tab
+- [ ] 主参考路选择与删除后重选策略
 
-### 4. 主时间轴与同步模型
-- [ ] 建立 `virtual master clock`
-- [ ] 支持主参考路设定（用于初始化与用户理解）
-- [ ] 每路目标时间计算：`targetTime = masterTime + offset`
-- [ ] 全局时间显示（当前 master time）
+### C. 控制桥接（Content Script）
+- [ ] 封装 watch page 播放器控制 adapter
+- [ ] 实现 play/pause/seek/getCurrentTime/getDuration
+- [ ] 实现 mute/volume/setPlaybackRate
+- [ ] 实现状态上报（playing/paused/buffering/error）
+- [ ] 注入失败与重试机制
 
-### 5. 全局控制
-- [ ] 全局播放：就绪路统一播放，必要时先校正
-- [ ] 全局暂停：统一暂停并停止 master clock 推进
-- [ ] `Sync Now`：立即按目标时间校正
-- [ ] 全局跳转（输入或滑动到 T）：每路跳转到 `T + offset`
+### D. 全局控制
+- [ ] Play All
+- [ ] Pause All
+- [ ] Seek All (T)
+- [ ] Sync Now
+- [ ] 全局 master time 显示
 
-### 6. Offset 管理
-- [ ] 每路支持手动输入 offset（支持正负号与小数秒）
-- [ ] offset 修改后立即影响目标时间计算
-- [ ] offset 值清晰显示
-- [ ] 处理极端 offset（seek 时做边界裁切或提示无效）
+### E. Offset 与音频
+- [ ] 每路 offset（支持正负小数）
+- [ ] 每路 mute/volume
+- [ ] 单选 solo（不覆盖存储状态）
+- [ ] 一键“主路有声，其余静音”
 
-### 7. 每路音频控制（核心）
-- [ ] `mute`：仅改变静音状态，不覆盖原 `volume`
-- [ ] `volume`：0~100% 实时调节
-- [ ] `solo`（单选）：同一时刻只允许一路 solo
-- [ ] 退出 solo 时恢复各路进入 solo 前的原始音频状态
-- [ ] 全局显示 `Solo Mode` 状态
-- [ ] （推荐）一键“主视角有声，其余静音”
+### F. 同步引擎
+- [ ] virtual master clock
+- [ ] drift 计算：`(master + offset) - current`
+- [ ] 稳定区间阈值
+- [ ] soft correction：playbackRate（0.98~1.02）
+- [ ] hard correction：seek（含 cooldown）
+- [ ] 每路 sync status + drift 可视化
 
-### 8. 漂移检测与纠偏
-- [ ] 启动周期性同步检查（初始 500ms）
-- [ ] 误差计算：`drift = (masterTime + offset) - currentTime`
-- [ ] 两级纠偏
-- [ ] 大误差：硬校正 `seek`（建议阈值约 1.0s）
-- [ ] 中误差：软校正 `playbackRate`（建议 0.98~1.02）
-- [ ] 小误差：稳定区间内不处理（避免抖动）
-- [ ] 纠偏后恢复 `playbackRate = 1.0`
+### G. 容错与边界
+- [ ] 单路异常不阻塞全局
+- [ ] tab 关闭/跳转失效处理
+- [ ] 广告/状态突变时的降级与恢复
+- [ ] 日志与诊断信息面板（最小版）
 
-### 9. 容错与边界
-- [ ] 单路播放失败：标记错误，不阻塞其他路
-- [ ] 单路 seek 失败：标记未同步，允许用户 `Sync Now` 重试
-- [ ] 主参考路删除后的降级行为可用
-- [ ] 同步引擎异常可恢复，不导致会话崩溃
+### H. MVP 验收
+- [ ] 2~4 路 tabs 导入稳定
+- [ ] 全局控制行为正确
+- [ ] offset 与同步行为符合预期
+- [ ] audio 语义正确（mute/volume/solo）
+- [ ] 异常路不拖垮其他路
 
-## MVP 验收清单
-- [ ] 可输入多个 YouTube Archive 链接并加载成功
-- [ ] 多路视频可同屏展示
-- [ ] 可对每路设置 offset 并参与同步
-- [ ] 全局播放/暂停行为正确
-- [ ] `Sync Now` 可将多路重新对齐
-- [ ] 每路 `mute/volume/solo` 行为符合定义
-- [ ] 正常观看时无快速明显漂移
-- [ ] 单路异常不影响其他路
+## Milestone 2: 可用性增强
+- [ ] Session 保存/加载（storage.local）
+- [ ] 路由重命名
+- [ ] 批量导入与筛选
+- [ ] 快捷键体系
+- [ ] 更详细同步状态提示
 
-## Milestone 2（可用性增强）
-- [ ] Session 保存/加载
-- [ ] 本地持久化（URL、offset、volume、主参考路等）
-- [ ] 每路可重命名
-- [ ] 布局切换（如 2x2 / 1主多辅）
-- [ ] 一键“主视角有声，其余静音”优化交互
-- [ ] 更清晰的同步状态提示
+## Milestone 3: 可选模式与扩展
+- [ ] `Embed Grid Mode` 设计与实现
+- [ ] 主/可选模式共享核心状态与同步引擎
+- [ ] 会话导入导出
+- [ ] 分享会话配置
 
-## Milestone 3（远期增强）
-- [ ] 快捷键系统
-- [ ] 拖拽排序与布局调整
-- [ ] 更细粒度同步策略
-- [ ] 重点时刻标记
-- [ ] 会话配置导入导出/分享
+## 讨论与决策待办（只讨论，不实现）
+- [ ] 是否支持跨窗口分组控制
+- [ ] 是否允许“只读路由”（仅观测不控制）
+- [ ] ads 场景下的默认策略（暂停同步/继续纠偏）
+- [ ] Embed Grid 与 TabSync 的切换 UX
